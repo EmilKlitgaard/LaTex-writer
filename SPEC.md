@@ -123,3 +123,31 @@ Visual (rich-text) editor, comments/track changes, git integration, diff view, m
 - iCloud can evict or delay files under a workspace in iCloud Drive; mitigated by placeholder detection, but workspaces outside iCloud are more reliable.
 - SyncTeX accuracy depends on the document (some packages break it).
 - Safari differs slightly from Chrome in PDF.js worker loading and WebSocket reconnects. Both are handled in testing.
+
+## 7. Where the build differs from this spec
+
+Decided while building; each is a change to something written above.
+
+- **History storage.** Snapshots are whole files, compressed and stored once per distinct content, instead of diffs. Thinning old versions would break a chain of diffs; whole snapshots can be dropped freely. The 2-minute interval, retention and 50 MB cap are as specified.
+- **Compile folder.** The project is copied (only changed files) into a build folder in Application Support and compiled there, instead of compiling in the project with `-outdir`. BibTeX and `\include` break with an outside output folder under the read/write restrictions below.
+- **Sandboxing LaTeX.** Beyond "shell escape off": `latexmkrc` files in the project are ignored, and TeX may only read and write inside the build folder (`openin_any=p`, `openout_any=p`). Without this a guest could run code or read files on the host through the document.
+- **LuaLaTeX while sharing.** Refused while "Show on LAN" is on. Lua code in a document can read and write any file, and that cannot be restricted without breaking LuaLaTeX itself. It works when sharing is off.
+- **EPS figures with pdfLaTeX.** These need the restricted shell escape that "always off" also disables, so they do not convert automatically. Use PDF, PNG or JPG figures.
+- **`% !TEX root`.** Not implemented. The main file is the one set in the project settings (or "Set as main file" in the file tree).
+- **Recompile button.** Forces a full LaTeX run even if nothing changed; auto-compile skips the run when nothing changed.
+- **Moving a project to the Trash.** Tries a direct move and falls back to asking Finder, because macOS restricts direct access to the Trash folder.
+- **iCloud placeholders.** Detected in the old `.name.icloud` form. Newer macOS versions download such files on first read without the app noticing, which also works.
+- **Theme.** Stored per browser, not in `config.json`, so each person (host and guests) has their own.
+- **Narrow screens.** Below 820 px the editor and PDF are shown one at a time with a Source/PDF switch.
+
+## 8. Assistant add-on (added after v1)
+
+Requested after the first version; not part of the original plan above.
+
+- A collapsible right sidebar with a chat, toggled by an Assistant button; the whole feature is switched on or off in Settings.
+- The chat runs the Claude Code CLI on the host's Mac in headless mode, so it uses the host's Claude subscription and needs no API key. Host only.
+- The assistant works through an MCP server built into the app (`/mcp`, loopback only): project overview, read, search, edit, write, compile, PDF text, PDF page image, raw log. The same endpoint can be registered in the Claude app or Claude Code.
+- Edits apply to the live document immediately. The pre-change text is kept as a backup until every change in that file is accepted or declined, then deleted. Changes can be decided one by one or all at once.
+- The PDF from before the pending changes is kept alongside, for a Before / After switch in the preview.
+- To keep usage low the assistant gets the PDF as extracted text, and page images only on request.
+- Edits the user makes by hand in a file with pending changes show up in the same review list, since "pending" is the difference between the backup and the current text.

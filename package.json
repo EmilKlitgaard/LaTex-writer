@@ -1,0 +1,45 @@
+{
+  "name": "latex-writer",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Locally hosted, Overleaf-style LaTeX editor",
+  "scripts": {
+    "start": "node server/index.ts",
+    "build": "vite build",
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit -p . && tsc --noEmit -p web"
+  },
+  "dependencies": {
+    "@codemirror/autocomplete": "^6.20.3",
+    "@codemirror/commands": "^6.11.1",
+    "@codemirror/language": "^6.12.4",
+    "@codemirror/legacy-modes": "^6.5.4",
+    "@codemirror/lint": "^6.9.7",
+    "@codemirror/search": "^6.7.2",
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/view": "^6.43.13",
+    "@fastify/static": "^10.1.5",
+    "@lezer/highlight": "^1.2.5",
+    "@napi-rs/canvas": "^1.0.9",
+    "archiver": "^8.0.0",
+    "chokidar": "^5.0.0",
+    "codemirror": "^6.0.2",
+    "diff": "^9.0.0",
+    "fastify": "^5.12.5",
+    "lib0": "^0.2.119",
+    "pdfjs-dist": "^6.3.289",
+    "ws": "^8.22.0",
+    "y-codemirror.next": "^0.3.6",
+    "y-protocols": "^1.0.7",
+    "y-websocket": "^3.1.0",
+    "yjs": "^13.6.33"
+  },
+  "devDependencies": {
+    "@types/archiver": "^8.0.0",
+    "@types/node": "^26.6.3",
+    "@types/ws": "^8.18.2",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.1"
+  }
+}
