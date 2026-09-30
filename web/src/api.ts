@@ -22,7 +22,7 @@ export type BuildResult = {
   warningCount: number
   finishedAt: number
 }
-export type ProjectIndex = { labels: { name: string; file: string }[]; bibKeys: { key: string; title?: string; author?: string }[]; files: string[] }
+export type ProjectIndex = { labels: { name: string; file: string; line: number }[]; bibKeys: { key: string; file: string; line: number; title?: string; author?: string }[]; files: string[] }
 export type Snapshot = { id: string; t: number; size: number; reason: string }
 
 export type Hunk = { id: string; oldStart: number; oldLines: string[]; newStart: number; newLines: string[] }

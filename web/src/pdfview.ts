@@ -357,6 +357,10 @@ export class PdfView {
     }
     const slot = index === null ? undefined : this.slots[index]
     if (!slot || this.pdf !== pdf) return
+    // Render the target page first so its size and position are stable before we scroll to it.
+    // This avoids a race where the page renders after scrollTo() and shifts the layout.
+    await this.render(slot)
+    if (this.pdf !== pdf) return
     // Destinations give the top of the target in PDF units, measured from the bottom of the page.
     const pageHeight = this.sizeOf(slot).height
     let top: number | null = null

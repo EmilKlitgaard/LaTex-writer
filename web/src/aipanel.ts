@@ -9,6 +9,10 @@ export type AiPanelHooks = {
   /** What the user is looking at in the editor right now. */
   context: () => ChatContext
   onJump: (file: string, line: number) => void
+  /** Text files in the project, so file names in replies can link to them. */
+  files: () => string[]
+  /** Where a \label or citation key is defined, so `eq:E` in a reply can link to it. */
+  symbol: (name: string) => { file: string; line: number; what: string } | null
   onReview: (review: ReviewSummary) => void
   onClose: () => void
 }
@@ -293,7 +297,7 @@ export class AiPanel {
       const toolRow = (p: Extract<ChatPart, { kind: 'tool' }>): HTMLElement =>
         h('div', { class: `ai-tool ai-tool-${p.status} ${p.parent ? 'ai-tool-nested' : ''}` }, icon(p.status === 'error' ? 'error' : p.status === 'done' ? 'check' : 'refresh', 13), p.label)
       for (const p of m.parts) {
-        if (p.kind === 'text') node.append(h('div', { class: 'md' }, renderMarkdown(p.text)))
+        if (p.kind === 'text') node.append(h('div', { class: 'md' }, renderMarkdown(p.text, { files: this.hooks.files, symbol: this.hooks.symbol, open: (file, line) => this.hooks.onJump(file, line ?? 1) })))
         else if (!p.parent) {
           node.append(toolRow(p))
           // Steps a helper agent took, tucked under the helper's own line.

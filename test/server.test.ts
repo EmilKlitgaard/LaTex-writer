@@ -340,6 +340,15 @@ test('the index lists labels, citation keys and files', async () => {
   assert.ok(idx.files.includes('fig.png'))
 })
 
+test('the index says on which line each label and citation key is defined', async () => {
+  const idx = (await host('GET', '/api/project/index')).json
+  const lineOf = async (file: string): Promise<string[]> => (await host('GET', `/api/project/raw?path=${encodeURIComponent(file)}`)).text.split('\n')
+  const label = idx.labels.find((l: any) => l.name === 'sec:method')
+  assert.ok((await lineOf(label.file))[label.line - 1].includes('\\label{sec:method}'))
+  const key = idx.bibKeys.find((k: any) => k.key === 'knuth1984')
+  assert.ok((await lineOf(key.file))[key.line - 1].includes('knuth1984'))
+})
+
 test('export copies the PDF to Downloads without overwriting', async () => {
   assert.equal((await compileAndWait()).status, 'success')
   const first = (await host('POST', '/api/host/export', {})).json

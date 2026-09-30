@@ -297,6 +297,13 @@ export function mountWorkbench(root: HTMLElement, hooks: WorkbenchHooks): () => 
       aiPanel = new AiPanel({
         context: () => editor.selectionContext(),
         onJump: (file, line) => void openFileWhenListed(file, line),
+        files: () => textFilesOf(tree),
+        symbol: (name) => {
+          const label = index.labels.find((l) => l.name === name)
+          if (label) return { file: label.file, line: label.line, what: `\\label{${name}}` }
+          const key = index.bibKeys.find((k) => k.key === name)
+          return key ? { file: key.file, line: key.line, what: `Citation ${name}` } : null
+        },
         onReview: applyReview,
         onClose: () => setAiOpen(false),
       })

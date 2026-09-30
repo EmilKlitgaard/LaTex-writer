@@ -526,15 +526,20 @@ export class Project {
         } catch {
           continue
         }
+        const lineAt = (offset: number): number => {
+          let line = 1
+          for (let i = content.indexOf('\n'); i >= 0 && i < offset; i = content.indexOf('\n', i + 1)) line++
+          return line
+        }
         if (ext === 'tex') {
-          for (const m of content.matchAll(/\\label\{([^}]+)\}/g)) labels.push({ name: m[1], file: n.path })
+          for (const m of content.matchAll(/\\label\{([^}]+)\}/g)) labels.push({ name: m[1], file: n.path, line: lineAt(m.index) })
         } else {
           for (const m of content.matchAll(/@(\w+)\s*\{\s*([^,\s}]+)\s*,/g)) {
             if (/^(string|comment|preamble)$/i.test(m[1])) continue
             const rest = content.slice(m.index, m.index + 1500)
             const title = /\btitle\s*=\s*[{"]+([^}"]+)/i.exec(rest)?.[1]
             const author = /\bauthor\s*=\s*[{"]+([^}"]+)/i.exec(rest)?.[1]
-            bibKeys.push({ key: m[2], title: title?.replace(/\s+/g, ' '), author: author?.replace(/\s+/g, ' ') })
+            bibKeys.push({ key: m[2], file: n.path, line: lineAt(m.index), title: title?.replace(/\s+/g, ' '), author: author?.replace(/\s+/g, ' ') })
           }
         }
       }
@@ -562,8 +567,8 @@ export class Project {
 }
 
 export type ProjectIndex = {
-  labels: { name: string; file: string }[]
-  bibKeys: { key: string; title?: string; author?: string }[]
+  labels: { name: string; file: string; line: number }[]
+  bibKeys: { key: string; file: string; line: number; title?: string; author?: string }[]
   files: string[]
 }
 
