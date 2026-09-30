@@ -16,14 +16,17 @@ import { HttpError, INTERNAL_DIR } from './paths.ts'
 
 export const MODELS = ['sonnet', 'haiku', 'opus'] as const
 export type Model = (typeof MODELS)[number]
+export const EFFORTS = ['low', 'medium', 'high'] as const
+export type Effort = (typeof EFFORTS)[number]
 
 export type ChatPart =
   | { kind: 'text'; text: string }
-  | { kind: 'tool'; id: string; label: string; status: 'running' | 'done' | 'error' }
+  /** parent: the helper-agent call this step belongs to, when a helper made it. */
+  | { kind: 'tool'; id: string; label: string; status: 'running' | 'done' | 'error'; parent?: string }
 
 export type ChatMessage = { id: string; role: 'user' | 'assistant'; parts: ChatPart[]; error?: string; t: number }
 export type ChatContext = { file?: string; line?: number; selection?: string; selectionStart?: number; selectionEnd?: number }
-export type Usage = { fiveHour?: number; sevenDay?: number; resetsAt?: number }
+export type Usage = { fiveHour?: number; sevenDay?: number; resetsAt?: number; /** Tokens the main conversation currently re-sends every step. */ context?: number }
 
 const CLI_DIRS = ['/opt/homebrew/bin', '/usr/local/bin', path.join(os.homedir(), '.local/bin'), path.join(os.homedir(), '.claude/local')]
 
@@ -41,9 +44,47 @@ export function findClaudeCli(): string | null {
   return null
 }
 
+const t = (name: string): string => `mcp__${MCP_SERVER_NAME}__${name}`
+
+/**
+ * Helper agents. Each starts with an empty context and only returns a short report, so long files,
+ * PDF text and page images never enter the main conversation, which every later step re-sends.
+ */
+export const HELPER_AGENTS = {
+  reader: {
+    description: 'Reads and searches the project sources and the PDF text, and answers a specific question about them in a few lines. Use it instead of reading long files or many pages yourself.',
+    prompt: 'You answer one question about a LaTeX project by reading its files and the compiled PDF text with your tools. Read only what you need (use search and line ranges). Reply with a short, precise answer: quote at most a few lines, and give file:line references so the caller can edit directly. Never paste whole sections.',
+    tools: [t('project_info'), t('read_file'), t('search'), t('read_pdf_text')],
+    model: 'haiku',
+  },
+  'layout-checker': {
+    description: 'Checks the layout of the compiled PDF (page breaks, figure and table placement, spacing, overfull lines) and reports concrete problems with page numbers and the source lines responsible. Use it for any visual check instead of looking at pages yourself.',
+    prompt: 'You check the layout of a compiled LaTeX document and report problems. Start with check_layout (text). Look at images only where it leaves a question open: first an overview of several pages with view_page pages: [..], then a band of one page with from/to if you need detail. Never edit files. Reply with a short list: page, what is wrong, the likely source location (file:line), and a suggested fix. If everything looks fine, say so in one line.',
+    tools: [t('check_layout'), t('view_page'), t('read_pdf_text'), t('search'), t('read_file'), t('project_info')],
+    model: 'haiku',
+  },
+  writer: {
+    description: 'Carries out a clearly specified piece of writing or editing across the project (for example: rewrite a section along given lines, restructure a chapter, fix all errors of a kind), compiles, fixes errors it caused, and reports what it changed. Give it complete instructions; it cannot see this conversation.',
+    prompt: 'You make the requested changes to a LaTeX project with your tools, keeping the author\'s style and changing nothing else. Put all changes to a file in one edit_file call with several edits; pass compile: false on all but the last call. Fix compile errors you caused. Your changes wait for the user\'s review, so do not ask for confirmation. Reply with a short summary of what changed where (file:line); do not paste the new text.',
+    tools: [t('project_info'), t('read_file'), t('search'), t('edit_file'), t('write_file'), t('compile'), t('check_layout'), t('read_log')],
+    model: 'sonnet',
+  },
+} as const
+
 const SYSTEM_PROMPT = `You are the writing assistant inside LaTeX Writer, a LaTeX editor. The user is writing a document and chats with you in a sidebar next to the editor and the PDF.
 
 ${INSTRUCTIONS}
+
+Helper agents (the Agent tool): reader, layout-checker and writer. Each starts fresh, does its part
+with the same tools, and returns a short report, so its reading, page images and intermediate steps
+do not fill up this conversation.
+- Delegate: reading long files or many PDF pages (reader), every visual or layout check
+  (layout-checker), and large or multi-file writing jobs (writer).
+- Do it yourself: small edits, short reads, and anything needing the context of this conversation.
+- Give a helper a complete, self-contained task (it cannot see this conversation) and ask for a
+  short report. Independent helpers can run at the same time.
+- Always set run_in_background to false, so you receive the report before you answer.
+- Use only these three helpers.
 
 Answering:
 - Be brief. The sidebar is narrow: short paragraphs, no tables, no headings.
@@ -63,8 +104,11 @@ function toolLabel(name: string, input: Record<string, unknown>): string {
     case 'write_file': return `Wrote ${file}`
     case 'compile': return 'Compiled'
     case 'read_pdf_text': return 'Read the PDF text'
-    case 'view_page': return `Looked at page ${input.page ?? ''}`
+    case 'view_page': return Array.isArray(input.pages) ? `Looked at pages ${input.pages.join(', ')}` : `Looked at page ${input.page ?? ''}${input.from !== undefined || input.to !== undefined ? ' (part)' : ''}`
+    case 'check_layout': return 'Checked the layout'
     case 'read_log': return 'Read the LaTeX log'
+    case 'Agent':
+    case 'Task': return `${String(input.subagent_type ?? 'Helper').replace(/^./, (c) => c.toUpperCase())}: ${String(input.description ?? '').slice(0, 80)}`
     default: return tool
   }
 }
@@ -158,7 +202,7 @@ export class AiChat {
     return lines.length ? `<context>\n${lines.join('\n')}\n</context>\n\n${text}` : text
   }
 
-  send(textInput: unknown, context: ChatContext, model: Model): void {
+  send(textInput: unknown, context: ChatContext, model: Model, effort: Effort): void {
     const text = typeof textInput === 'string' ? textInput.trim() : ''
     if (!text) throw new HttpError(400, 'Write a message first')
     if (text.length > 20_000) throw new HttpError(400, 'That message is too long')
@@ -172,10 +216,10 @@ export class AiChat {
     this.current = reply
     this.emit({ kind: 'message', message: user })
     this.emit({ kind: 'message', message: reply })
-    this.run(cli, this.buildPrompt(text, context), model, reply, true)
+    this.run(cli, this.buildPrompt(text, context), model, effort, reply, true)
   }
 
-  private run(cli: string, prompt: string, model: Model, reply: ChatMessage, mayRetry: boolean): void {
+  private run(cli: string, prompt: string, model: Model, effort: Effort, reply: ChatMessage, mayRetry: boolean): void {
     fs.mkdirSync(this.cwd, { recursive: true })
     const mcpConfig = JSON.stringify({
       mcpServers: { [MCP_SERVER_NAME]: { type: 'http', url: `http://127.0.0.1:${serverPort}/mcp` } },
@@ -184,10 +228,15 @@ export class AiChat {
       '-p',
       '--output-format', 'stream-json', '--verbose', '--include-partial-messages',
       '--model', model,
-      // No built-in tools, no user plugins, skills, hooks or other MCP servers: only this app's tools.
-      '--tools', '',
+      '--effort', effort,
+      // Summarise the conversation before it grows past this, instead of re-sending it all every step.
+      '--autocompact', '100k',
+      // No built-in tools except the one that starts helper agents; no user plugins, skills, hooks or
+      // other MCP servers: only this app's tools.
+      '--tools', 'Agent',
+      '--agents', JSON.stringify(HELPER_AGENTS),
       '--mcp-config', mcpConfig, '--strict-mcp-config',
-      '--allowedTools', `mcp__${MCP_SERVER_NAME}`,
+      '--allowedTools', `mcp__${MCP_SERVER_NAME}`, 'Agent',
       '--setting-sources', '',
       '--disable-slash-commands',
       '--permission-prompts', 'none',
@@ -229,12 +278,21 @@ export class AiChat {
       if (ev.type === 'system' && ev.subtype === 'init' && typeof ev.session_id === 'string') {
         this.sessionId = ev.session_id
       } else if (ev.type === 'stream_event') {
+        // Only the main conversation is streamed into the chat; helpers report through their result.
+        if (ev.parent_tool_use_id) return
         const e = ev.event
         if (e?.type === 'content_block_delta' && e.delta?.type === 'text_delta' && typeof e.delta.text === 'string') appendText(e.delta.text)
+        if (e?.type === 'message_start' && e.message?.usage) {
+          const u = e.message.usage
+          this.usage = { ...this.usage, context: (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) }
+          this.emit({ kind: 'usage', usage: this.usage })
+        }
       } else if (ev.type === 'assistant') {
+        const parent = typeof ev.parent_tool_use_id === 'string' ? ev.parent_tool_use_id : undefined
         for (const block of ev.message?.content ?? []) {
           if (block.type !== 'tool_use' || tools.has(block.id)) continue
           const part: Extract<ChatPart, { kind: 'tool' }> = { kind: 'tool', id: block.id, label: toolLabel(String(block.name), block.input ?? {}), status: 'running' }
+          if (parent) part.parent = parent
           tools.set(block.id, part)
           reply.parts.push(part)
           producedAnything = true
@@ -252,13 +310,16 @@ export class AiChat {
       } else if (ev.type === 'rate_limit_event') {
         const w = ev.rate_limit_info?.unifiedWindows
         this.usage = {
+          ...this.usage,
           fiveHour: w?.five_hour?.utilization,
           sevenDay: w?.seven_day?.utilization,
           resetsAt: w?.five_hour?.resetsAt ? w.five_hour.resetsAt * 1000 : undefined,
         }
         this.emit({ kind: 'usage', usage: this.usage })
       } else if (ev.type === 'result') {
+        // A helper left running in the background produces a second result later; keep the last.
         gotResult = true
+        delete reply.error
         if (ev.is_error) reply.error = typeof ev.result === 'string' && ev.result ? ev.result : 'The assistant stopped with an error.'
         else if (!reply.parts.some((p) => p.kind === 'text') && typeof ev.result === 'string' && ev.result) appendText(ev.result)
       }
@@ -288,7 +349,7 @@ export class AiChat {
       // The saved conversation is gone on Claude Code's side (cleared, or a new Mac): start a fresh one.
       if (resuming && mayRetry && !this.stopRequested && !producedAnything && !gotResult && code !== 0 && !signal && /session|conversation|resume/i.test(stderr)) {
         this.sessionId = null
-        this.run(cli, `${this.host.overview()}\n\n${prompt}`, model, reply, false)
+        this.run(cli, `${this.host.overview()}\n\n${prompt}`, model, effort, reply, false)
         return
       }
       for (const part of tools.values()) if (part.status === 'running') part.status = 'error'

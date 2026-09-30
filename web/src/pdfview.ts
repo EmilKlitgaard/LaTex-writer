@@ -24,6 +24,8 @@ type Slot = {
   wrapper: HTMLElement
   canvas: HTMLCanvasElement | null
   textLayer: HTMLElement | null
+  /** Clickable areas for the PDF's links (\ref, \cite, table of contents, URLs). */
+  linkLayer: HTMLElement | null
   size: { width: number; height: number } | null
   renderedKey: string
   pendingKey: string
@@ -76,6 +78,7 @@ export class PdfView {
     this.resizeObserver.observe(this.element)
     this.element.addEventListener('scroll', () => this.updateCurrentPage(), { passive: true })
     this.pagesEl.addEventListener('dblclick', (e) => {
+      if ((e.target as HTMLElement).closest('.pdf-link')) return
       const wrapper = (e.target as HTMLElement).closest<HTMLElement>('.pdf-page')
       if (!wrapper || !this.opts.onDoubleClick) return
       const rect = wrapper.getBoundingClientRect()
@@ -150,7 +153,7 @@ export class PdfView {
     while (this.slots.length < pdf.numPages) {
       const index = this.slots.length
       const wrapper = h('div', { class: 'pdf-page', dataset: { index: String(index) } })
-      const slot: Slot = { index, wrapper, canvas: null, textLayer: null, size: null, renderedKey: '', pendingKey: '', task: null, lastVisible: 0 }
+      const slot: Slot = { index, wrapper, canvas: null, textLayer: null, linkLayer: null, size: null, renderedKey: '', pendingKey: '', task: null, lastVisible: 0 }
       this.slots.push(slot)
       this.pagesEl.appendChild(wrapper)
       this.observer.observe(wrapper)
@@ -230,6 +233,8 @@ export class PdfView {
         slot.canvas.style.height = '100%'
       }
       if (slot.textLayer && slot.renderedKey !== this.key()) slot.textLayer.hidden = true
+      // Link areas are positioned for the old zoom; hide them until the page is redrawn.
+      if (slot.linkLayer && slot.renderedKey !== this.key()) slot.linkLayer.hidden = true
     }
   }
 
@@ -294,6 +299,77 @@ export class PdfView {
     setTimeout(() => marker.remove(), 2200)
   }
 
+  // ---- links ----------------------------------------------------------------------
+
+  /** Transparent clickable areas over the page's link annotations. */
+  private async buildLinks(page: pdfjs.PDFPageProxy, viewport: pdfjs.PageViewport): Promise<HTMLElement | null> {
+    let annotations: any[]
+    try {
+      annotations = await page.getAnnotations({ intent: 'display' })
+    } catch {
+      return null
+    }
+    const layer = h('div', { class: 'pdf-links' })
+    for (const a of annotations) {
+      if (a.subtype !== 'Link' || !Array.isArray(a.rect)) continue
+      const [x1, y1] = viewport.convertToViewportPoint(a.rect[0], a.rect[1]) as number[]
+      const [x2, y2] = viewport.convertToViewportPoint(a.rect[2], a.rect[3]) as number[]
+      const style = {
+        left: `${Math.min(x1, x2)}px`,
+        top: `${Math.min(y1, y2)}px`,
+        width: `${Math.max(4, Math.abs(x2 - x1))}px`,
+        height: `${Math.max(4, Math.abs(y2 - y1))}px`,
+      }
+      const url = typeof a.url === 'string' ? a.url : typeof a.unsafeUrl === 'string' ? a.unsafeUrl : null
+      if (url && /^(https?:|mailto:)/i.test(url)) {
+        // Web links open in a new tab; anything else (javascript:, file:) is ignored.
+        layer.append(h('a', { class: 'pdf-link pdf-link-external', href: url, target: '_blank', rel: 'noopener noreferrer', title: url, style }))
+      } else if (a.dest) {
+        const dest = a.dest
+        layer.append(h('a', {
+          class: 'pdf-link', href: '#', title: 'Go to the link target', style,
+          onclick: (e: MouseEvent) => {
+            e.preventDefault()
+            void this.goToDestination(dest)
+          },
+        }))
+      }
+    }
+    return layer.childElementCount ? layer : null
+  }
+
+  /** Scrolls to a destination inside the PDF, such as the target of a \ref or a table-of-contents entry. */
+  async goToDestination(dest: string | unknown[]): Promise<void> {
+    const pdf = this.pdf
+    if (!pdf) return
+    let explicit: unknown[] | null = null
+    try {
+      explicit = typeof dest === 'string' ? await pdf.getDestination(dest) : dest
+    } catch {}
+    if (!Array.isArray(explicit) || !explicit.length) return
+    const [ref, mode, ...args] = explicit as [unknown, { name?: string } | undefined, ...(number | null)[]]
+    let index: number | null = null
+    if (typeof ref === 'number') index = ref
+    else if (ref && typeof ref === 'object') {
+      try {
+        index = await pdf.getPageIndex(ref as Parameters<typeof pdf.getPageIndex>[0])
+      } catch {}
+    }
+    const slot = index === null ? undefined : this.slots[index]
+    if (!slot || this.pdf !== pdf) return
+    // Destinations give the top of the target in PDF units, measured from the bottom of the page.
+    const pageHeight = this.sizeOf(slot).height
+    let top: number | null = null
+    if (mode?.name === 'XYZ') top = args[1] ?? null
+    else if (mode?.name === 'FitH' || mode?.name === 'FitBH') top = args[0] ?? null
+    else if (mode?.name === 'FitR') top = args[3] ?? null
+    const y = top === null ? 0 : Math.max(0, pageHeight - top) * this.scale
+    this.element.scrollTo({ top: slot.wrapper.offsetTop + y - 16, behavior: 'smooth' })
+    const marker = h('div', { class: 'pdf-target', style: { top: `${Math.max(0, y - 4)}px` } })
+    slot.wrapper.appendChild(marker)
+    setTimeout(() => marker.remove(), 1600)
+  }
+
   // ---- rendering ------------------------------------------------------------------
 
   private key(): string {
@@ -336,15 +412,19 @@ export class PdfView {
       try {
         await new pdfjs.TextLayer({ textContentSource: page.streamTextContent(), container: textLayer, viewport }).render()
       } catch {}
+      const linkLayer = await this.buildLinks(page, viewport)
       if (slot.pendingKey !== key || this.pdf !== pdf) return
 
       canvas.style.width = '100%'
       canvas.style.height = '100%'
       slot.canvas?.remove()
       slot.textLayer?.remove()
+      slot.linkLayer?.remove()
       slot.wrapper.prepend(canvas, textLayer)
+      if (linkLayer) slot.wrapper.append(linkLayer)
       slot.canvas = canvas
       slot.textLayer = textLayer
+      slot.linkLayer = linkLayer
       slot.renderedKey = key
     } catch (err) {
       if ((err as Error)?.name !== 'RenderingCancelledException') console.error('PDF render failed', err)
@@ -362,8 +442,10 @@ export class PdfView {
       if (this.isNear(slot)) continue
       slot.canvas?.remove()
       slot.textLayer?.remove()
+      slot.linkLayer?.remove()
       slot.canvas = null
       slot.textLayer = null
+      slot.linkLayer = null
       slot.renderedKey = ''
     }
   }

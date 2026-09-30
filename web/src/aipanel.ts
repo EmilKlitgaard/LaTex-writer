@@ -15,7 +15,10 @@ export type AiPanelHooks = {
 
 const SUGGESTIONS = ['Fix the compile errors', 'Proofread the selected text', 'Make the selected paragraph shorter', 'Check the PDF for layout problems']
 const MODEL_LABELS: Record<string, string> = { sonnet: 'Sonnet', haiku: 'Haiku (lightest)', opus: 'Opus (heaviest)' }
+const EFFORT_LABELS: Record<string, string> = { low: 'Quick', medium: 'Balanced', high: 'Thorough' }
 const MAX_LINES_SHOWN = 14
+/** Past this size every step of the conversation gets expensive; suggest starting over. */
+const LONG_CONVERSATION = 80_000
 
 /** The assistant sidebar: a chat, and the list of changes waiting for a decision. */
 export class AiPanel {
@@ -32,6 +35,7 @@ export class AiPanel {
   private contextEl: HTMLElement
   private usageEl: HTMLElement
   private modelSelect: HTMLSelectElement
+  private effortSelect: HTMLSelectElement
   private nodes = new Map<string, HTMLElement>()
   private renderQueued = new Set<string>()
   private stickToBottom = true
@@ -57,18 +61,22 @@ export class AiPanel {
       onfocus: () => this.updateContext(),
     })
     this.sendBtn = h('button', { class: 'btn btn-primary ai-send', type: 'button', onclick: () => (this.busy ? void this.stop() : void this.send()) })
-    this.modelSelect = h('select', { class: 'ai-model', title: 'Model', 'aria-label': 'Model', onchange: () => void this.setModel(this.modelSelect.value) })
+    this.modelSelect = h('select', { class: 'ai-model', title: 'Model: Haiku uses the least of your plan, Opus the most', 'aria-label': 'Model', onchange: () => void this.setSetting({ aiModel: this.modelSelect.value }) })
+    this.effortSelect = h('select', { class: 'ai-model', title: 'How much the assistant thinks before acting. Quick uses the least of your plan.', 'aria-label': 'Effort', onchange: () => void this.setSetting({ aiEffort: this.effortSelect.value }) })
 
     this.element = h('aside', { class: 'pane ai-pane', 'aria-label': 'Assistant' },
       h('div', { class: 'pane-header' },
         icon('sparkle'), h('strong', null, 'Assistant'), h('span', { class: 'grow' }),
-        this.modelSelect,
         iconButton('plus', 'New chat', () => void this.reset()),
         iconButton('close', 'Hide the assistant', () => this.hooks.onClose()),
       ),
       this.listEl,
       this.reviewEl,
-      h('div', { class: 'ai-composer' }, this.contextEl, h('div', { class: 'ai-input-row' }, this.input, this.sendBtn), this.usageEl),
+      h('div', { class: 'ai-composer' },
+        this.contextEl,
+        h('div', { class: 'ai-input-row' }, this.input, this.sendBtn),
+        h('div', { class: 'ai-options' }, this.modelSelect, this.effortSelect),
+        this.usageEl),
     )
     this.applySettings()
     this.renderAll()
@@ -100,6 +108,9 @@ export class AiPanel {
     clear(this.modelSelect)
     for (const m of ai?.models ?? []) this.modelSelect.appendChild(h('option', { value: m, selected: m === ai?.model }, MODEL_LABELS[m] ?? m))
     this.modelSelect.value = ai?.model ?? ''
+    clear(this.effortSelect)
+    for (const e of ai?.efforts ?? []) this.effortSelect.appendChild(h('option', { value: e, selected: e === ai?.effort }, EFFORT_LABELS[e] ?? e))
+    this.effortSelect.value = ai?.effort ?? ''
   }
 
   handleEvent(e: ServerEvent): void {
@@ -146,7 +157,9 @@ export class AiPanel {
         break
       case 'reset':
         this.messages = []
+        this.usage = { ...this.usage, context: undefined }
         this.renderAll()
+        this.renderUsage()
         break
       case 'settings':
         app.ai = e.ai
@@ -189,9 +202,9 @@ export class AiPanel {
     }
   }
 
-  private async setModel(model: string): Promise<void> {
+  private async setSetting(patch: Record<string, string>): Promise<void> {
     try {
-      await api('POST', '/api/host/settings', { aiModel: model })
+      await api('POST', '/api/host/settings', patch)
     } catch (err) {
       toast((err as Error).message, 'error')
     }
@@ -221,11 +234,19 @@ export class AiPanel {
 
   private renderUsage(): void {
     clear(this.usageEl)
+    const bits: string[] = []
+    const context = this.usage.context
+    const long = typeof context === 'number' && context > LONG_CONVERSATION && this.messages.length > 0
+    if (typeof context === 'number' && this.messages.length) bits.push(`Conversation ${Math.round(context / 1000)}k tokens`)
     const u = this.usage.fiveHour
-    if (typeof u !== 'number') return
-    const pct = Math.round(u * 100)
-    this.usageEl.textContent = `${pct}% of your plan's 5-hour limit used`
-    this.usageEl.classList.toggle('warn', pct >= 80)
+    const pct = typeof u === 'number' ? Math.round(u * 100) : null
+    if (pct !== null) bits.push(`${pct}% of your plan's 5-hour limit used`)
+    this.usageEl.append(bits.join(' · '))
+    if (long) {
+      this.usageEl.append(h('br'), 'Long conversation: every step re-reads it. ',
+        h('button', { class: 'link', type: 'button', onclick: () => void this.reset() }, 'Start a new chat'), ' when the task changes.')
+    }
+    this.usageEl.classList.toggle('warn', long || (pct ?? 0) >= 80)
   }
 
   focus(): void {
@@ -269,9 +290,16 @@ export class AiPanel {
     if (m.role === 'user') {
       node.append(m.parts.map((p) => (p.kind === 'text' ? p.text : '')).join(''))
     } else {
+      const toolRow = (p: Extract<ChatPart, { kind: 'tool' }>): HTMLElement =>
+        h('div', { class: `ai-tool ai-tool-${p.status} ${p.parent ? 'ai-tool-nested' : ''}` }, icon(p.status === 'error' ? 'error' : p.status === 'done' ? 'check' : 'refresh', 13), p.label)
       for (const p of m.parts) {
         if (p.kind === 'text') node.append(h('div', { class: 'md' }, renderMarkdown(p.text)))
-        else node.append(h('div', { class: `ai-tool ai-tool-${p.status}` }, icon(p.status === 'error' ? 'error' : p.status === 'done' ? 'check' : 'refresh', 13), p.label))
+        else if (!p.parent) {
+          node.append(toolRow(p))
+          // Steps a helper agent took, tucked under the helper's own line.
+          const steps = m.parts.filter((x): x is Extract<ChatPart, { kind: 'tool' }> => x.kind === 'tool' && x.parent === p.id)
+          if (steps.length) node.append(h('div', { class: 'ai-helper-steps' }, steps.map(toolRow)))
+        }
       }
       const last = this.messages[this.messages.length - 1]
       if (this.busy && last?.id === m.id && !m.error) node.append(h('div', { class: 'ai-thinking' }, m.parts.length ? '' : 'Thinking…'))

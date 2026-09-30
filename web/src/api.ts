@@ -28,11 +28,11 @@ export type Snapshot = { id: string; t: number; size: number; reason: string }
 export type Hunk = { id: string; oldStart: number; oldLines: string[]; newStart: number; newLines: string[] }
 export type ReviewFile = { path: string; status: 'modified' | 'added'; hunks: Hunk[] }
 export type ReviewSummary = { files: ReviewFile[]; changeCount: number; hasBeforePdf: boolean }
-export type ChatPart = { kind: 'text'; text: string } | { kind: 'tool'; id: string; label: string; status: 'running' | 'done' | 'error' }
+export type ChatPart = { kind: 'text'; text: string } | { kind: 'tool'; id: string; label: string; status: 'running' | 'done' | 'error'; parent?: string }
 export type ChatMessage = { id: string; role: 'user' | 'assistant'; parts: ChatPart[]; error?: string; t: number }
 export type ChatContext = { file?: string; line?: number; selection?: string; selectionStart?: number; selectionEnd?: number }
-export type AiSettings = { enabled: boolean; available: boolean; model: string; models: string[] }
-export type AiUsage = { fiveHour?: number; sevenDay?: number; resetsAt?: number }
+export type AiSettings = { enabled: boolean; available: boolean; model: string; models: string[]; effort: string; efforts: string[] }
+export type AiUsage = { fiveHour?: number; sevenDay?: number; resetsAt?: number; context?: number }
 
 export class ApiError extends Error {
   status: number

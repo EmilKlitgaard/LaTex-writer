@@ -502,8 +502,11 @@ test('the tool endpoint speaks MCP and refuses web pages', async () => {
   const note = await fetch(`${HOST}/mcp`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) })
   assert.equal(note.status, 202)
   const names = (await mcp('tools/list')).json.result.tools.map((t: any) => t.name)
-  for (const n of ['project_info', 'read_file', 'search', 'edit_file', 'write_file', 'compile', 'read_pdf_text', 'view_page', 'read_log']) assert.ok(names.includes(n), n)
+  for (const n of ['project_info', 'read_file', 'search', 'edit_file', 'write_file', 'compile', 'check_layout', 'read_pdf_text', 'view_page', 'read_log']) assert.ok(names.includes(n), n)
   assert.equal((await mcp('no/such/method')).json.error.code, -32601)
+  // Errors come back in two forms: protocol errors for bad requests, isError results for failed tools.
+  assert.equal((await mcp('tools/call', { name: 'rm_rf', arguments: {} })).json.error.code, -32602)
+  assert.equal((await mcp('tools/call', { name: 'read_file', arguments: { path: 'nope.tex' } })).json.result.isError, true)
   // A browser always sends Origin on a cross-site POST; that is how a web page is kept out.
   assert.equal((await mcp('tools/list', undefined, { Origin: 'http://evil.example' })).status, 403)
   assert.equal((await mcp('tools/list', undefined, { Origin: HOST })).status, 403)
@@ -515,12 +518,24 @@ test('assistant edits are live but pending; each change can be accepted or decli
   assert.match((await tool('project_info')).content[0].text, /Main file: main\.tex[\s\S]*main\.tex {2}\(\d+ lines\)[\s\S]*review:\n {2}none/)
   assert.match((await tool('read_file', { path: 'main.tex', start_line: 1, end_line: 2 })).content[0].text, /^main\.tex, lines 1-2 of \d+:\n\\documentclass/)
 
-  const e1 = await tool('edit_file', { path: 'main.tex', old_text: 'Start writing here.', new_text: 'AI-EDIT-ONE.' })
-  assert.match(e1.content[0].text, /Edited main\.tex at line \d+/)
-  await tool('edit_file', { path: 'main.tex', old_text: '\\section{Conclusion}', new_text: '\\section{Conclusions}\nAn added line.' })
+  // Two changes in one call; the reply carries the compile result, so no separate compile step.
+  const e1 = await tool('edit_file', {
+    path: 'main.tex',
+    edits: [
+      { old_text: 'Start writing here.', new_text: 'AI-EDIT-ONE.' },
+      { old_text: '\\section{Conclusion}', new_text: '\\section{Conclusions}\nAn added line.' },
+    ],
+  })
+  assert.match(e1.content[0].text, /^Edited main\.tex \(2 changes, from line \d+\)\. Pending the user's review\.\nCompile succeeded: 0 errors/)
   await until(() => a.text.toString().includes('AI-EDIT-ONE.') && a.text.toString().includes('An added line.'), 'edits to reach the open editor')
 
   assert.equal((await tool('edit_file', { path: 'main.tex', old_text: 'not in the file', new_text: 'x' })).isError, true)
+  // All or nothing: a failing second edit leaves the first one unapplied.
+  const before = a.text.toString()
+  const partial = await tool('edit_file', { path: 'main.tex', edits: [{ old_text: 'AI-EDIT-ONE.', new_text: 'SHOULD-NOT-APPEAR' }, { old_text: 'not there', new_text: 'x' }] })
+  assert.equal(partial.isError, true)
+  assert.match(partial.content[0].text, /Edit 2 of 2: old_text was not found[\s\S]*Nothing was changed/)
+  assert.equal(a.text.toString(), before)
   assert.match((await tool('edit_file', { path: 'main.tex', old_text: '\\usepackage', new_text: 'x' })).content[0].text, /occurs \d+ times/)
   assert.equal((await tool('read_file', { path: '../../etc/passwd' })).isError, true)
   assert.equal((await tool('write_file', { path: '.latexwriter/project.json', content: '{}' })).isError, true)
@@ -550,19 +565,26 @@ test('assistant edits are live but pending; each change can be accepted or decli
   assert.equal(fs.existsSync(path.join(projectDir, '.latexwriter/review')), false, 'backup deleted once everything is decided')
 
   // A new file: declining removes it, accepting keeps it.
-  assert.match((await tool('write_file', { path: 'notes/ideas.tex', content: 'Idea one.\n' })).content[0].text, /Created notes\/ideas\.tex/)
+  assert.match((await tool('write_file', { path: 'notes/ideas.tex', content: 'Idea one.\n', compile: false })).content[0].text, /^Created notes\/ideas\.tex\. Pending the user's review\. Not compiled yet\.$/)
   r = await review()
   assert.deepEqual([r.files[0].path, r.files[0].status], ['notes/ideas.tex', 'added'])
   await host('POST', '/api/host/review/decline', { path: 'notes/ideas.tex' })
   assert.equal(fs.existsSync(path.join(projectDir, 'notes/ideas.tex')), false)
-  await tool('write_file', { path: 'notes/ideas.tex', content: 'Idea two.\n' })
+  await tool('write_file', { path: 'notes/ideas.tex', content: 'Idea two.\n', compile: false })
   await host('POST', '/api/host/review/accept', {})
+  // Replacing an existing file must be asked for, and is refused for long files.
+  assert.match((await tool('write_file', { path: 'notes/ideas.tex', content: 'x' })).content[0].text, /already exists[\s\S]*overwrite: true/)
+  await tool('write_file', { path: 'notes/long.tex', content: Array.from({ length: 100 }, (_, i) => `Line ${i}`).join('\n'), compile: false })
+  const long = await tool('write_file', { path: 'notes/long.tex', content: 'short', overwrite: true, compile: false })
+  assert.equal(long.isError, true)
+  assert.match(long.content[0].text, /has 100 lines, too long to replace/)
+  await host('POST', '/api/host/review/decline', { path: 'notes/long.tex' })
   assert.equal(fs.readFileSync(path.join(projectDir, 'notes/ideas.tex'), 'utf8'), 'Idea two.\n')
   assert.equal((await review()).changeCount, 0)
 
   // Decline everything at once puts every file back.
-  await tool('edit_file', { path: 'main.tex', old_text: 'AI-EDIT-ONE.', new_text: 'AI-EDIT-TWO.' })
-  await tool('edit_file', { path: 'notes/ideas.tex', old_text: 'two', new_text: 'three' })
+  await tool('edit_file', { path: 'main.tex', edits: [{ old_text: 'AI-EDIT-ONE.', new_text: 'AI-EDIT-TWO.' }], compile: false })
+  await tool('edit_file', { path: 'notes/ideas.tex', edits: [{ old_text: 'two', new_text: 'three' }], compile: false })
   assert.equal((await review()).changeCount, 2)
   await host('POST', '/api/host/review/decline', {})
   await until(() => a.text.toString().includes('AI-EDIT-ONE.'), 'decline all to reach the editor')
@@ -570,30 +592,46 @@ test('assistant edits are live but pending; each change can be accepted or decli
   assert.equal((await review()).changeCount, 0)
 
   // Undoing the change by hand also clears it from the pending list.
-  await tool('edit_file', { path: 'main.tex', old_text: 'AI-EDIT-ONE.', new_text: 'Start writing here.' })
+  await tool('edit_file', { path: 'main.tex', old_text: 'AI-EDIT-ONE.', new_text: 'Start writing here.', compile: false })
   assert.equal(a.text.toString(), original)
   await host('POST', '/api/host/review/accept', {})
 })
 
 test('the assistant can compile and read the result as text or as a page image', async () => {
   const c = await tool('compile')
-  assert.match(c.content[0].text, /^Compile success \(pdflatex, [\d.]+ s\)\. 0 errors, \d+ warnings?, 1 page\./)
+  assert.equal(c.isError, undefined)
+  assert.match(c.content[0].text, /^Compile succeeded: 0 errors, \d+ warnings?, 1 page\./)
   assert.match((await tool('read_pdf_text')).content[0].text, /PDF has 1 page\.[\s\S]*--- page 1 ---[\s\S]*Introduction/)
+  assert.match((await tool('read_pdf_text', { query: 'introduction' })).content[0].text, /^p\.1: 1 Introduction/m)
+  assert.match((await tool('read_pdf_text', { query: 'no such words' })).content[0].text, /does not occur/)
+  assert.match((await tool('check_layout')).content[0].text, /^1 page\./)
+
+  const size = (r: any): number[] => (/(\d+)x(\d+) px/.exec(r.content[0].text) ?? []).slice(1).map(Number)
   const page = await tool('view_page', { page: 1 })
   assert.equal(page.content[1].type, 'image')
   assert.equal(page.content[1].mimeType, 'image/png')
   assert.equal(page.content[1].data.slice(0, 5), 'iVBOR')
-  const band = await tool('view_page', { page: 1, from: 0, to: 0.3 })
+  assert.ok(Math.max(...size(page)) <= 1000, `full page kept small: ${size(page)}`)
+  const high = await tool('view_page', { page: 1, detail: 'high' })
+  assert.match(high.content[0].text, /High detail is only given for a band/)
+  assert.deepEqual(size(high), size(page), 'no high detail for a whole page')
+  const band = await tool('view_page', { page: 1, from: 0, to: 0.3, detail: 'high' })
   assert.match(band.content[0].text, /from 0 to 0\.3/)
+  const sheet = await tool('view_page', { pages: [1, 1, 5] })
+  assert.match(sheet.content[0].text, /^Overview of pages 1, 1, 5 \(of 1\)/)
+  assert.equal(sheet.content[1].type, 'image')
   assert.equal((await tool('view_page', { page: 99 })).isError, true)
+  assert.equal((await tool('view_page', {})).isError, true)
   assert.match((await tool('search', { query: 'knuth' })).content[0].text, /references\.bib:\d+:/)
   assert.match((await tool('read_log', { lines: 5 })).content[0].text, /\S/)
 
   // A broken edit comes back from compile as an error with file and line.
-  await tool('edit_file', { path: 'main.tex', old_text: '\\maketitle', new_text: '\\maketitle\n\\nosuchmacro' })
-  assert.match((await tool('compile')).content[0].text, /Compile error[\s\S]*ERROR main\.tex:\d+: Undefined control sequence/)
+  const broken = await tool('edit_file', { path: 'main.tex', edits: [{ old_text: '\\maketitle', new_text: '\\maketitle\n\\nosuchmacro' }] })
+  assert.match(broken.content[0].text, /Compile FAILED: 1 error[\s\S]*ERROR main\.tex:\d+: Undefined control sequence\.\n {4}at: \\nosuchmacro$/)
+  const failed = await tool('compile')
+  assert.equal(failed.isError, true, 'a failing compile is reported as an error')
   await host('POST', '/api/host/review/decline', {})
-  assert.match((await tool('compile')).content[0].text, /^Compile success/)
+  assert.match((await tool('compile')).content[0].text, /^Compile succeeded/)
 })
 
 test('the chat runs the Claude Code CLI with only this app\'s tools and no API key', async () => {
@@ -608,8 +646,16 @@ pwd > "$HOME/cli-cwd.txt"
 echo '{"type":"system","subtype":"init","session_id":"11111111-1111-1111-1111-111111111111"}'
 echo '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi from "}}}'
 echo '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"the stand-in."}}}'
+echo '{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":10,"cache_read_input_tokens":42000,"cache_creation_input_tokens":500}}}}'
 echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Hi from the stand-in."},{"type":"tool_use","id":"t1","name":"mcp__latexwriter__edit_file","input":{"path":"main.tex"}}]}}'
 echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","is_error":false}]}}'
+echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"a1","name":"Agent","input":{"subagent_type":"layout-checker","description":"Check pages 1-3","run_in_background":false}}]}}'
+echo '{"type":"stream_event","parent_tool_use_id":"a1","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"HELPER TEXT MUST NOT LEAK"}}}'
+echo '{"type":"stream_event","parent_tool_use_id":"a1","event":{"type":"message_start","message":{"usage":{"input_tokens":999999}}}}'
+echo '{"type":"assistant","parent_tool_use_id":"a1","message":{"content":[{"type":"tool_use","id":"h1","name":"mcp__latexwriter__view_page","input":{"pages":[1,2,3]}}]}}'
+echo '{"type":"user","parent_tool_use_id":"a1","message":{"content":[{"type":"tool_result","tool_use_id":"h1","is_error":false}]}}'
+echo '{"type":"assistant","parent_tool_use_id":"a1","message":{"content":[{"type":"text","text":"HELPER TEXT MUST NOT LEAK"}]}}'
+echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"a1","is_error":false}]}}'
 echo '{"type":"rate_limit_event","rate_limit_info":{"unifiedWindows":{"five_hour":{"utilization":0.5,"resetsAt":1790789400}}}}'
 echo '{"type":"result","is_error":false,"result":"Hi from the stand-in."}'
 `, { mode: 0o755 })
@@ -627,15 +673,29 @@ echo '{"type":"result","is_error":false,"result":"Hi from the stand-in."}'
 
   const [user, reply] = done.chat.messages
   assert.deepEqual([user.role, user.parts[0].text], ['user', 'Tighten the abstract'])
-  assert.deepEqual(reply.parts, [{ kind: 'text', text: 'Hi from the stand-in.' }, { kind: 'tool', id: 't1', label: 'Edited main.tex', status: 'done' }])
+  assert.deepEqual(reply.parts, [
+    { kind: 'text', text: 'Hi from the stand-in.' },
+    { kind: 'tool', id: 't1', label: 'Edited main.tex', status: 'done' },
+    { kind: 'tool', id: 'a1', label: 'Layout-checker: Check pages 1-3', status: 'done' },
+    { kind: 'tool', id: 'h1', label: 'Looked at pages 1, 2, 3', status: 'done', parent: 'a1' },
+  ])
   assert.equal(done.chat.usage.fiveHour, 0.5)
+  assert.equal(done.chat.usage.context, 42510, 'context size of the main conversation, not the helper')
 
   const args = fs.readFileSync(path.join(HOME, 'cli-args.txt'), 'utf8').split('\n')
   const flag = (name: string): string => args[args.indexOf(name) + 1]
   assert.ok(args.includes('-p') && args.includes('--strict-mcp-config') && args.includes('--disable-slash-commands'))
-  assert.equal(flag('--tools'), '', 'no built-in tools')
-  assert.equal(flag('--allowedTools'), 'mcp__latexwriter')
+  assert.equal(flag('--tools'), 'Agent', 'no built-in tools except starting helpers')
+  assert.deepEqual(args.slice(args.indexOf('--allowedTools') + 1, args.indexOf('--allowedTools') + 3), ['mcp__latexwriter', 'Agent'])
   assert.equal(flag('--model'), 'sonnet')
+  assert.equal(flag('--effort'), 'medium')
+  assert.equal(flag('--autocompact'), '100k')
+  const agents = JSON.parse(flag('--agents'))
+  assert.deepEqual(Object.keys(agents), ['reader', 'layout-checker', 'writer'])
+  assert.equal(agents.reader.model, 'haiku')
+  assert.ok(agents.reader.tools.every((x: string) => /^mcp__latexwriter__(project_info|read_file|search|read_pdf_text)$/.test(x)), 'the reader cannot edit')
+  assert.ok(!agents['layout-checker'].tools.some((x: string) => /edit_file|write_file/.test(x)), 'the layout checker cannot edit')
+  assert.match(fs.readFileSync(path.join(HOME, 'cli-args.txt'), 'utf8'), /set run_in_background to false/)
   assert.deepEqual(JSON.parse(flag('--mcp-config')), { mcpServers: { latexwriter: { type: 'http', url: `http://127.0.0.1:${PORT}/mcp` } } })
   assert.equal(args.includes('--resume'), false)
   const stdin = fs.readFileSync(path.join(HOME, 'cli-stdin.txt'), 'utf8')
@@ -650,13 +710,14 @@ echo '{"type":"result","is_error":false,"result":"Hi from the stand-in."}'
   assert.equal(args2[args2.indexOf('--resume') + 1], '11111111-1111-1111-1111-111111111111')
   assert.equal(fs.readFileSync(path.join(HOME, 'cli-stdin.txt'), 'utf8'), 'And the title?')
 
-  // The model choice is passed on.
-  await host('POST', '/api/host/settings', { aiModel: 'haiku' })
-  await host('POST', '/api/host/settings', { aiModel: 'not-a-model' })
+  // The model and effort choices are passed on.
+  await host('POST', '/api/host/settings', { aiModel: 'haiku', aiEffort: 'low' })
+  await host('POST', '/api/host/settings', { aiModel: 'not-a-model', aiEffort: 'extreme' })
   await host('POST', '/api/host/ai/send', { text: 'Third' })
   await until(async () => ((await chat()).chat.messages.length === 6 && !(await chat()).chat.busy), 'third turn')
   const args3 = fs.readFileSync(path.join(HOME, 'cli-args.txt'), 'utf8').split('\n')
   assert.equal(args3[args3.indexOf('--model') + 1], 'haiku')
+  assert.equal(args3[args3.indexOf('--effort') + 1], 'low')
 
   // New chat forgets the conversation.
   assert.equal((await host('POST', '/api/host/ai/reset', {})).status, 200)

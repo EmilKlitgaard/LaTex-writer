@@ -79,7 +79,7 @@ export function mountWorkbench(root: HTMLElement, hooks: WorkbenchHooks): () => 
     showOnly('empty')
   }
 
-  async function openFile(path: string, line?: number): Promise<void> {
+  async function openFile(path: string, line?: number, reveal = true): Promise<void> {
     const node = fileTree.find(path)
     if (!node || node.type !== 'file') {
       toast(`"${path}" is not in the project`, 'error')
@@ -90,6 +90,8 @@ export function mountWorkbench(root: HTMLElement, hooks: WorkbenchHooks): () => 
     fileTitle.textContent = path
     fileTree.setActive(path)
     store(lastFileKey(), path)
+    // Opening a file the user asked for brings the editor back; the automatic first open does not.
+    if (reveal) showEditor()
     setNarrowView('editor')
     if (narrow.matches) setSidebarOpen(false, false)
     if (node.kind === 'text') {
@@ -262,6 +264,7 @@ export function mountWorkbench(root: HTMLElement, hooks: WorkbenchHooks): () => 
       const res = await api<{ position: { page: number; h: number; v: number; width: number; height: number } | null }>(
         'POST', '/api/project/synctex/view', { file: currentFile, line, column })
       if (!res.position) return toast('That line is not in the PDF. Compile first, or check that the file is included.', 'info')
+      showViewer()
       setNarrowView('pdf')
       pdfView.highlight(res.position.page, res.position.h, res.position.v, res.position.width, res.position.height)
     } catch (err) {
@@ -343,6 +346,38 @@ export function mountWorkbench(root: HTMLElement, hooks: WorkbenchHooks): () => 
     h('button', { class: 'tab', type: 'button', dataset: { view: 'pdf' }, onclick: () => setNarrowView('pdf') }, 'PDF'),
     narrowAiTab,
   )
+  // Desktop layout: only the editor, both side by side, or only the PDF. Remembered per browser.
+  type Layout = 'editor' | 'split' | 'viewer'
+  const LAYOUTS: { id: Layout; label: string; title: string }[] = [
+    { id: 'editor', label: 'Editor', title: 'Only the editor' },
+    { id: 'split', label: 'Split', title: 'Editor and PDF side by side' },
+    { id: 'viewer', label: 'Viewer', title: 'Only the PDF' },
+  ]
+  const layoutSwitch = h('div', { class: 'layout-switch', role: 'group', 'aria-label': 'Layout' },
+    LAYOUTS.map((l) => h('button', { class: 'tab', type: 'button', title: l.title, dataset: { layout: l.id }, onclick: () => setLayout(l.id) }, l.label)))
+  let layout: Layout = 'split'
+  function setLayout(next: Layout, remember = true): void {
+    layout = next
+    if (remember) store('layout', next)
+    workbench.dataset.layout = next
+    layoutSwitch.querySelectorAll<HTMLElement>('.tab').forEach((t) => {
+      const on = t.dataset.layout === next
+      t.classList.toggle('active', on)
+      t.setAttribute('aria-pressed', String(on))
+    })
+    // Panes that were hidden have no size; let them measure themselves again.
+    requestAnimationFrame(() => editor.refreshLayout())
+    if (next !== 'editor') aiPanel?.updateContext()
+  }
+  /** Something needs the editor on screen (opening a file, jumping to a source line). */
+  function showEditor(): void {
+    if (layout === 'viewer') setLayout('split', false)
+  }
+  /** Something needs the PDF on screen (showing a line in the PDF). */
+  function showViewer(): void {
+    if (layout === 'editor') setLayout('split', false)
+  }
+
   function setNarrowView(view: 'editor' | 'pdf' | 'ai'): void {
     if (view === 'ai' && !workbench.classList.contains('ai-open')) setAiOpen(true, false)
     workbench.dataset.view = view
@@ -370,6 +405,7 @@ export function mountWorkbench(root: HTMLElement, hooks: WorkbenchHooks): () => 
       compileBtn,
       h('label', { class: 'check', title: 'Compile automatically shortly after you stop typing' }, autoToggle, 'Auto'),
       statusEl,
+      layoutSwitch,
       narrowSwitch,
     ),
     h('div', { class: 'topbar-right' },
@@ -445,7 +481,7 @@ export function mountWorkbench(root: HTMLElement, hooks: WorkbenchHooks): () => 
 
   const banner = h('div', { class: 'banner', hidden: true, role: 'alert' }, 'Connection lost. Reconnecting… Changes you make now may not be saved.')
   const dividerA = h('div', { class: 'divider', role: 'separator', 'aria-orientation': 'vertical' })
-  const dividerB = h('div', { class: 'divider', role: 'separator', 'aria-orientation': 'vertical' })
+  const dividerB = h('div', { class: 'divider divider-preview', role: 'separator', 'aria-orientation': 'vertical' })
   const dividerC = h('div', { class: 'divider divider-ai', role: 'separator', 'aria-orientation': 'vertical' })
   const panes = h('div', { class: 'panes' }, sidebar, dividerA, editorPane, dividerB, previewPane, dividerC, aiSlot)
   const workbench = h('div', { class: 'workbench', dataset: { view: 'editor' } }, topbar, banner, panes)
@@ -504,6 +540,10 @@ export function mountWorkbench(root: HTMLElement, hooks: WorkbenchHooks): () => 
   renderPeople()
   applyAiAvailability()
   if (store('aiOpen') === '1' && !narrow.matches) setAiOpen(true, false)
+  {
+    const saved = store('layout')
+    setLayout(saved === 'editor' || saved === 'viewer' ? saved : 'split', false)
+  }
   document.title = `${app.project?.name ?? 'Project'} · LaTeX Writer`
 
   // ---- data -------------------------------------------------------------------------
@@ -615,7 +655,10 @@ export function mountWorkbench(root: HTMLElement, hooks: WorkbenchHooks): () => 
       e.preventDefault()
       void compile()
     } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
+      // Everything is saved to disk as you type, so saving has nothing left to do: compile, from
+      // anywhere on the page (inside the editor the same key is handled there).
       e.preventDefault()
+      void compile()
     }
   }
   document.addEventListener('keydown', onKey)
@@ -629,7 +672,7 @@ export function mountWorkbench(root: HTMLElement, hooks: WorkbenchHooks): () => 
     const last = store(lastFileKey())
     const main = app.project?.mainFile
     const first = [last, main].find((p) => p && fileTree.find(p)?.kind === 'text') ?? fileTree.firstTextFile()?.path
-    if (first) await openFile(first)
+    if (first) await openFile(first, undefined, false)
   })()
 
   return () => {

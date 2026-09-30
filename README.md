@@ -70,7 +70,12 @@ A chat in a right-hand sidebar, opened with the **Assistant** button. It can rea
 
 - **No API key.** Each message runs the Claude Code CLI already installed on this Mac (`claude -p`), which is signed in with your Claude subscription. Usage counts against that plan; the sidebar shows how much of the 5-hour limit is used.
 - **Changes wait for you.** An edit by the assistant goes into the document at once, and the text from before is kept as a backup in `.latexwriter/review/`. Each change is listed with Accept and Decline; the editor tints the changed lines, and the PDF pane gets a Before / After switch. Accepting keeps the change, declining puts the old text back, and when nothing is pending the backup is deleted.
-- **Kept cheap.** Claude Code is started with no built-in tools, skills, plugins or other MCP servers, only this app's nine tools. The assistant reads the PDF as text by default and asks for a page image only for layout questions.
+- **Kept cheap.** Every step of a conversation re-sends all of it, so the tools are built to need few steps and small answers:
+  - `edit_file` takes several edits in one call and compiles afterwards, returning errors with the offending source line.
+  - `check_layout` reports page fill, caption positions and overfull lines as text; `view_page` shows up to 8 pages in one small overview image, and high detail only for part of a page.
+  - `read_pdf_text` can search instead of returning whole pages; `write_file` refuses to rewrite long files.
+  - Claude Code runs with no built-in tools except starting helpers, no skills, plugins or other MCP servers, a chosen effort level, and automatic compaction at 100k tokens. The sidebar shows the conversation size and suggests a new chat when it grows large.
+- **Helper agents.** The main assistant can hand work to three helpers that start with an empty context and return a short report, so their reading and page images never enter the main conversation: `reader` (Haiku, read-only), `layout-checker` (Haiku, read-only, the only one meant to look at pages), and `writer` (Sonnet, edits). Their steps appear indented under the helper in the chat.
 - **Also usable from the Claude app or a Claude Code session.** The tools are an MCP server at `http://localhost:4173/mcp`. Register it once (the command is also in Settings):
 
 ```bash

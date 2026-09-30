@@ -14,7 +14,7 @@ import {
   SESSION_COOKIE, sessionCookie, setPasscode, parseCookies, type User,
 } from './auth.ts'
 import { DEFAULT_PORT, getConfig, loadConfig, touchRecentWorkspace, updateConfig, WEB_BUILD_DIR } from './config.ts'
-import { findClaudeCli, MODELS, setAiPort, type ChatContext, type Model } from './ai.ts'
+import { EFFORTS, findClaudeCli, MODELS, setAiPort, type ChatContext, type Effort, type Model } from './ai.ts'
 import { CLOSE_STALE } from './docs.ts'
 import { handleRpc } from './mcp.ts'
 import { addEventClient, broadcast, broadcastPresence, closeAllSockets, disconnectUsers, presence, trackSocket } from './hub.ts'
@@ -131,7 +131,14 @@ export async function startServer(opts: { port?: number; strictPort?: boolean } 
 
   const aiState = (): Record<string, unknown> => {
     const cfg = getConfig()
-    return { enabled: cfg.ai.enabled, model: MODELS.includes(cfg.ai.model as Model) ? cfg.ai.model : 'sonnet', available: findClaudeCli() !== null, models: MODELS }
+    return {
+      enabled: cfg.ai.enabled,
+      model: MODELS.includes(cfg.ai.model as Model) ? cfg.ai.model : 'sonnet',
+      effort: EFFORTS.includes(cfg.ai.effort as Effort) ? cfg.ai.effort : 'medium',
+      available: findClaudeCli() !== null,
+      models: MODELS,
+      efforts: EFFORTS,
+    }
   }
   const requireAi = (req: FastifyRequest): void => {
     requireHost(req)
@@ -268,6 +275,10 @@ export async function startServer(opts: { port?: number; strictPort?: boolean } 
       updateConfig((c) => void (c.ai.model = b.aiModel as string))
       broadcast('ai', { kind: 'settings', ai: aiState() }, 'host')
     }
+    if (typeof b.aiEffort === 'string' && EFFORTS.includes(b.aiEffort as Effort)) {
+      updateConfig((c) => void (c.ai.effort = b.aiEffort as string))
+      broadcast('ai', { kind: 'settings', ai: aiState() }, 'host')
+    }
     if (typeof b.lanEnabled === 'boolean') {
       if (b.lanEnabled && !getConfig().lan.passcodeHash) throw new HttpError(400, 'Set a passcode before turning sharing on')
       updateConfig((c) => void (c.lan.enabled = b.lanEnabled as boolean))
@@ -297,7 +308,8 @@ export async function startServer(opts: { port?: number; strictPort?: boolean } 
       selectionStart: Number.isFinite(Number(c.selectionStart)) ? Number(c.selectionStart) : undefined,
       selectionEnd: Number.isFinite(Number(c.selectionEnd)) ? Number(c.selectionEnd) : undefined,
     }
-    requireProject().ai.send(b.text, context, aiState().model as Model)
+    const ai = aiState()
+    requireProject().ai.send(b.text, context, ai.model as Model, ai.effort as Effort)
     return { ok: true }
   })
 

@@ -20,7 +20,7 @@ export type Config = {
   hostName: string
   lastPort: number
   /** The assistant add-on: off means no sidebar, no chat and no tool endpoint. */
-  ai: { enabled: boolean; model: string }
+  ai: { enabled: boolean; model: string; effort: string }
 }
 
 const defaults = (): Config => ({
@@ -28,7 +28,7 @@ const defaults = (): Config => ({
   lan: { enabled: false, passcodeHash: null },
   hostName: os.userInfo().username || 'Host',
   lastPort: DEFAULT_PORT,
-  ai: { enabled: true, model: 'sonnet' },
+  ai: { enabled: true, model: 'sonnet', effort: 'medium' },
 })
 
 let config: Config = defaults()

@@ -86,10 +86,11 @@ export function parseTexLog(log: string, buildDir?: string): LogEntry[] {
     if (m && !line.startsWith('(')) {
       const message = m[3].trim()
       if (isNoise(message) && entries.some((e) => e.severity === 'error')) continue
-      const detail: string[] = []
+      let detail: string[] = []
       for (let j = i + 1; j < Math.min(lines.length, i + 8); j++) {
         if (/^l\.\d+/.test(lines[j])) {
-          detail.push(lines[j].replace(/^l\.\d+\s?/, '').trim())
+          // The source line TeX stopped at says it best; the lines before it are TeX internals.
+          detail = [lines[j].replace(/^l\.\d+\s?/, '').trim()]
           break
         }
         if (lines[j].trim() && !/^(Type|See the|You can|Try typing)/.test(lines[j])) detail.push(lines[j].trim())

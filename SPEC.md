@@ -151,3 +151,5 @@ Requested after the first version; not part of the original plan above.
 - The PDF from before the pending changes is kept alongside, for a Before / After switch in the preview.
 - To keep usage low the assistant gets the PDF as extracted text, and page images only on request.
 - Edits the user makes by hand in a file with pending changes show up in the same review list, since "pending" is the difference between the backup and the current text.
+- Efficiency pass (after measuring a real session: 3 messages became 100 requests re-reading up to 215k tokens each, with 31 page images and 19 whole-file rewrites): batch edits with automatic compile, text layout report, multi-page overview images, capped image size, PDF text search, no rewrites of long files, effort setting, auto-compaction at 100k, conversation size shown in the sidebar.
+- Helper agents (Claude Code subagents) `reader`, `layout-checker` and `writer`, run in the foreground so the main assistant gets their report in the same turn. Failed compiles are returned as tool errors.
