@@ -65,7 +65,7 @@ export const HELPER_AGENTS = {
   },
   writer: {
     description: 'Carries out a clearly specified piece of writing or editing across the project (for example: rewrite a section along given lines, restructure a chapter, fix all errors of a kind), compiles, fixes errors it caused, and reports what it changed. Give it complete instructions; it cannot see this conversation.',
-    prompt: 'You make the requested changes to a LaTeX project with your tools, keeping the author\'s style and changing nothing else. Put all changes to a file in one edit_file call with several edits; pass compile: false on all but the last call. Fix compile errors you caused. Your changes wait for the user\'s review, so do not ask for confirmation. Reply with a short summary of what changed where (file:line); do not paste the new text.',
+    prompt: 'You make the requested changes to a LaTeX project with your tools, keeping the author\'s style and changing nothing else. Put all changes to a file in one edit_file call with several edits; pass compile: false on all but the last call. Follow the project notes and writing preferences that project_info shows. Fix compile errors you caused. Your changes wait for the user\'s review, so do not ask for confirmation. Reply with a short summary of what changed where (file:line); do not paste the new text.',
     tools: [t('project_info'), t('read_file'), t('search'), t('edit_file'), t('write_file'), t('compile'), t('check_layout'), t('read_log')],
     model: 'sonnet',
   },
@@ -92,6 +92,7 @@ Answering:
 - Refer to files by their project path, optionally with a line, like sections/method.tex:42. The sidebar turns these into links that open the file.
 - Mention a label or citation key on its own in backticks, like \`eq:E\` or \`knuth1984\` (or \\ref{eq:E}, \\cite{knuth1984}). The sidebar links it to where it is defined. Do not use backticks around ordinary words.
 - Do not paste back whole files or long passages the user can already see in the editor.
+- Notes you add to the project notes need no comment. If you changed the author's writing preferences, say so in one sentence.
 - When you changed something, say in one or two sentences what changed and where. The user sees the exact changes in the review list.
 - If a request is ambiguous, ask one short question instead of guessing.
 - Answer in the language the user writes in.`
@@ -105,6 +106,8 @@ function toolLabel(name: string, input: Record<string, unknown>): string {
     case 'search': return `Searched for "${String(input.query ?? '').slice(0, 40)}"`
     case 'edit_file': return `Edited ${file}`
     case 'write_file': return `Wrote ${file}`
+    case 'read_notes': return 'Read the notes'
+    case 'update_notes': return input.file === 'preferences' ? 'Updated your writing preferences' : 'Updated the project notes (INSTRUCTIONS.md)'
     case 'compile': return 'Compiled'
     case 'read_pdf_text': return 'Read the PDF text'
     case 'view_page': return Array.isArray(input.pages) ? `Looked at pages ${input.pages.join(', ')}` : `Looked at page ${input.page ?? ''}${input.from !== undefined || input.to !== undefined ? ' (part)' : ''}`
@@ -116,7 +119,13 @@ function toolLabel(name: string, input: Record<string, unknown>): string {
   }
 }
 
-type Saved = { sessionId: string | null; messages: ChatMessage[] }
+/** One conversation: its messages and the Claude Code session that holds its context. */
+type Chat = { id: string; sessionId: string | null; messages: ChatMessage[] }
+type Saved = { active?: Chat; archive?: Chat[]; sessionId?: string | null; messages?: ChatMessage[] }
+export type ChatSummary = { id: string; title: string; t: number; active: boolean }
+/** Chats kept per project, the one in use included. The oldest are dropped past this. */
+export const MAX_CHATS = 10
+const newChat = (): Chat => ({ id: crypto.randomUUID(), sessionId: null, messages: [] })
 
 let serverPort = 0
 /** The port this server answers on; Claude Code is pointed back at it for the tools. */
@@ -134,11 +143,12 @@ export class AiChat {
   private host: AiHost
   private file: string
   private cwd: string
-  private sessionId: string | null = null
+  private active: Chat = newChat()
+  /** Earlier chats, newest first. */
+  private archive: Chat[] = []
   private child: ChildProcess | null = null
   private current: ChatMessage | null = null
   private stopRequested = false
-  messages: ChatMessage[] = []
   usage: Usage = {}
 
   constructor(host: AiHost) {
@@ -149,11 +159,32 @@ export class AiChat {
     this.cwd = path.join(APP_HOME, 'ai', crypto.createHash('sha1').update(host.root).digest('hex').slice(0, 16))
     try {
       const saved = JSON.parse(fs.readFileSync(this.file, 'utf8')) as Saved
-      this.sessionId = typeof saved.sessionId === 'string' ? saved.sessionId : null
-      this.messages = Array.isArray(saved.messages) ? saved.messages : []
+      const valid = (c: unknown): c is Chat => !!c && typeof (c as Chat).id === 'string' && Array.isArray((c as Chat).messages)
+      // Older versions kept a single chat.
+      this.active = valid(saved.active) ? saved.active
+        : { id: crypto.randomUUID(), sessionId: typeof saved.sessionId === 'string' ? saved.sessionId : null, messages: Array.isArray(saved.messages) ? saved.messages : [] }
+      this.archive = Array.isArray(saved.archive) ? saved.archive.filter(valid) : []
+      this.trim()
       // A turn that was cut off by a restart can never finish.
-      for (const m of this.messages) for (const p of m.parts) if (p.kind === 'tool' && p.status === 'running') p.status = 'error'
+      for (const c of [this.active, ...this.archive]) for (const m of c.messages) for (const p of m.parts) if (p.kind === 'tool' && p.status === 'running') p.status = 'error'
     } catch {}
+  }
+
+  private get sessionId(): string | null {
+    return this.active.sessionId
+  }
+
+  private set sessionId(id: string | null) {
+    this.active.sessionId = id
+  }
+
+  get messages(): ChatMessage[] {
+    return this.active.messages
+  }
+
+  /** Drops the oldest chats so that, with the one in use, at most MAX_CHATS remain. */
+  private trim(): void {
+    this.archive.length = Math.min(this.archive.length, this.active.messages.length ? MAX_CHATS - 1 : MAX_CHATS)
   }
 
   get busy(): boolean {
@@ -164,26 +195,74 @@ export class AiChat {
     if (!fs.existsSync(this.host.root)) return
     try {
       fs.mkdirSync(path.dirname(this.file), { recursive: true })
-      writeFileAtomic(this.file, JSON.stringify({ sessionId: this.sessionId, messages: this.messages.slice(-200) } satisfies Saved))
+      writeFileAtomic(this.file, JSON.stringify({ active: this.cut(this.active), archive: this.archive.map((c) => this.cut(c)) } satisfies Saved))
     } catch (err) {
       console.error('Could not save the chat:', (err as Error).message)
     }
+  }
+
+  private cut(chat: Chat): Chat {
+    return { ...chat, messages: chat.messages.slice(-200) }
   }
 
   private emit(event: Record<string, unknown>): void {
     broadcast('ai', event, 'host')
   }
 
-  state(): Record<string, unknown> {
-    return { messages: this.messages, busy: this.busy, usage: this.usage }
+  /** Every chat worth keeping, the one in use first, then the newest. */
+  list(): ChatSummary[] {
+    const summary = (c: Chat, active: boolean): ChatSummary => {
+      const first = c.messages.find((m) => m.role === 'user')?.parts.find((p) => p.kind === 'text')
+      const title = (first?.kind === 'text' ? first.text : '').replace(/\s+/g, ' ').trim().slice(0, 70) || 'New chat'
+      return { id: c.id, title, t: c.messages[c.messages.length - 1]?.t ?? 0, active }
+    }
+    return [...(this.active.messages.length ? [summary(this.active, true)] : []), ...this.archive.map((c) => summary(c, false))]
   }
 
+  state(): Record<string, unknown> {
+    return { messages: this.messages, busy: this.busy, usage: this.usage, chats: this.list(), activeId: this.active.id }
+  }
+
+  /** Tells the panel to show whichever chat is now in use. */
+  private loaded(): void {
+    this.usage = { ...this.usage, context: undefined }
+    this.persist()
+    this.emit({ kind: 'loaded', ...this.state() })
+  }
+
+  /** Puts the chat in use on the shelf, if there is anything in it. */
+  private shelve(): void {
+    if (this.active.messages.length) this.archive.unshift(this.active)
+  }
+
+  /** Starts a fresh chat; the one in use stays in the list. */
   reset(): void {
     this.stop()
-    this.sessionId = null
-    this.messages = []
-    this.persist()
-    this.emit({ kind: 'reset' })
+    this.shelve()
+    this.active = newChat()
+    this.trim()
+    this.loaded()
+  }
+
+  open(id: unknown): void {
+    if (this.busy) throw new HttpError(409, 'Stop the assistant before switching chats')
+    const i = this.archive.findIndex((c) => c.id === id)
+    if (i < 0) return
+    const [chat] = this.archive.splice(i, 1)
+    this.shelve()
+    this.active = chat
+    this.trim()
+    this.loaded()
+  }
+
+  remove(id: unknown): void {
+    if (id === this.active.id) {
+      this.stop()
+      this.active = newChat()
+    } else {
+      this.archive = this.archive.filter((c) => c.id !== id)
+    }
+    this.loaded()
   }
 
   stop(): void {
@@ -216,6 +295,7 @@ export class AiChat {
     const user: ChatMessage = { id: crypto.randomUUID(), role: 'user', parts: [{ kind: 'text', text }], t: Date.now() }
     const reply: ChatMessage = { id: crypto.randomUUID(), role: 'assistant', parts: [], t: Date.now() }
     this.messages.push(user, reply)
+    this.trim()
     this.current = reply
     this.emit({ kind: 'message', message: user })
     this.emit({ kind: 'message', message: reply })

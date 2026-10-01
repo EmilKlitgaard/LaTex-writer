@@ -7,6 +7,7 @@ import { pipeline } from 'node:stream/promises'
 import { Transform } from 'node:stream'
 import chokidar, { type FSWatcher } from 'chokidar'
 import { AiChat } from './ai.ts'
+import { PROJECT_NOTES_FILE } from './notes.ts'
 import { Compiler, type BuildResult } from './compile.ts'
 import { writeFileAtomic } from './config.ts'
 import { DocManager } from './docs.ts'
@@ -223,6 +224,19 @@ export class Project {
     this.indexCache = null
     this.scheduleReviewBroadcast()
     this.scheduleAutoCompile()
+  }
+
+  /**
+   * Writes the project notes file (INSTRUCTIONS.md). Unlike the assistant's edits to the document,
+   * this does not wait for review: it is the assistant's own memory, and the author can read and edit it.
+   */
+  writeNotes(content: string): void {
+    const { abs } = resolveInside(this.root, PROJECT_NOTES_FILE)
+    if (!fs.existsSync(abs)) {
+      fs.writeFileSync(abs, '', { flag: 'wx' })
+      this.scheduleTreeBroadcast()
+    }
+    this.docs.setContent(PROJECT_NOTES_FILE, content)
   }
 
   // ---- compile ----------------------------------------------------------------

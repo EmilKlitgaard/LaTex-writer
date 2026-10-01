@@ -347,8 +347,15 @@ kbd { font-size: 11.5px; padding: 1px 5px; border: 1px solid var(--border-strong
 .ai-badge { min-width: 17px; height: 17px; padding: 0 4px; border-radius: 9px; background: var(--accent); color: var(--on-accent); font-size: 11px; font-weight: 700; line-height: 17px; text-align: center; }
 .ai-model { height: 26px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--bg); font-size: 12px; padding: 0 4px; max-width: 118px; min-width: 0; }
 .ai-pane > .pane-header { gap: 4px; }
-.ai-options { display: flex; gap: 6px; flex-wrap: wrap; }
-.ai-options .ai-model { max-width: none; flex: 0 1 auto; }
+.ai-pane { position: relative; }
+.ai-history { position: absolute; top: 38px; right: 6px; left: 6px; z-index: 20; max-height: 60%; overflow: auto; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--radius); box-shadow: 0 6px 22px rgb(0 0 0 / 0.22); padding: 4px; }
+.ai-history-head { font-size: 11px; color: var(--fg-faint); padding: 4px 8px 6px; }
+.ai-history-empty { padding: 8px; font-size: 12.5px; }
+.ai-history-row { display: flex; align-items: center; gap: 2px; border-radius: 6px; }
+.ai-history-row:hover, .ai-history-row.current { background: var(--accent-soft); }
+.ai-history-open { flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; gap: 8px; padding: 6px 8px; border: 0; background: none; text-align: left; font-size: 12.5px; }
+.ai-history-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-history-date { flex: none; font-size: 11px; color: var(--fg-muted); }
 .ai-messages { flex: 1 1 auto; min-height: 60px; overflow: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
 .ai-empty { margin: auto 0; display: flex; flex-direction: column; gap: 12px; padding: 8px 4px; }
 .ai-suggestions { display: flex; flex-direction: column; gap: 6px; }
@@ -384,27 +391,49 @@ kbd { font-size: 11.5px; padding: 1px 5px; border: 1px solid var(--border-strong
 .md a.md-file code { color: inherit; }
 .md a.md-file:hover { text-decoration-style: solid; }
 
-.ai-review { flex: none; max-height: 46%; display: flex; flex-direction: column; border-top: 1px solid var(--border); background: var(--surface); }
-.ai-review-head { display: flex; align-items: center; gap: 6px; padding: 7px 10px; flex: none; }
-.ai-review-list { overflow: auto; padding: 0 10px 10px; display: flex; flex-direction: column; gap: 8px; }
-.hunk { border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--bg); overflow: hidden; flex: none; }
-.hunk-head { display: flex; align-items: center; gap: 2px; padding: 2px 4px 2px 9px; border-bottom: 1px solid var(--border); }
-.hunk-where { font-family: var(--mono); font-size: 11.5px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-review { flex: none; max-height: 50%; display: flex; flex-direction: column; border-top: 1px solid var(--border-strong); background: var(--surface); box-shadow: 0 -3px 10px rgb(0 0 0 / 0.07); }
+.ai-review-head { display: flex; align-items: center; gap: 6px; padding: 5px 8px 5px 4px; flex: none; }
+.ai-review.open .ai-review-head { border-bottom: 1px solid var(--border); }
+.ai-review-toggle { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 5px 8px; border: 0; border-radius: 6px; background: none; font-size: 12.5px; text-align: left; }
+.ai-review-toggle:hover { background: var(--accent-soft); }
+.ai-review-toggle .icon { flex: none; color: var(--fg-muted); transition: transform 0.12s; }
+.ai-review.open .ai-review-toggle .icon { transform: rotate(90deg); }
+.ai-review-lines { display: inline-flex; gap: 6px; padding: 1px 7px; border-radius: 999px; background: var(--bg); border: 1px solid var(--border); font-family: var(--mono); font-size: 11px; font-weight: 600; }
+.ai-lines-added { color: var(--ok); }
+.ai-lines-removed { color: var(--danger); }
+.ai-review-list { overflow: auto; padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 8px; }
+.hunk { border: 1px solid var(--border-strong); border-radius: 8px; background: var(--bg); overflow: hidden; flex: none; }
+.hunk-head { display: flex; align-items: center; gap: 2px; padding: 3px 4px 3px 4px; border-bottom: 1px solid var(--border); background: var(--surface); }
+.hunk-where { flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; gap: 6px; padding: 3px 5px; border: 0; border-radius: 5px; background: none; font-size: 12px; text-align: left; }
+.hunk-where:hover { background: var(--accent-soft); }
+.hunk-where .icon { align-self: center; flex: none; color: var(--fg-muted); }
+.hunk-name { font-weight: 600; white-space: nowrap; }
+.hunk-dir { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-faint); font-size: 11px; }
+.hunk-at { flex: none; margin-left: auto; color: var(--fg-muted); font-size: 11px; }
 .hunk-accept { color: var(--ok); }
 .hunk-accept:hover { background: var(--ai-added); color: var(--ok); }
 .hunk-decline { color: var(--danger); }
 .hunk-decline:hover { background: var(--ai-removed); color: var(--danger); }
-.hunk-lines { margin: 0; padding: 5px 9px; font-size: 11.5px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
-.hunk-old { background: var(--ai-removed); }
-.hunk-new { background: var(--ai-added); }
+.hunk-lines { margin: 0; padding: 5px 9px 5px 8px; font-size: 11.5px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; border-left: 3px solid transparent; }
+.hunk-old { background: var(--ai-removed); border-left-color: var(--danger); }
+.hunk-new { background: var(--ai-added); border-left-color: var(--ok); }
 
-.ai-composer { flex: none; border-top: 1px solid var(--border); padding: 8px 10px 9px; display: flex; flex-direction: column; gap: 5px; }
-.ai-context { font-size: 11.5px; color: var(--fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-height: 15px; }
-.ai-input-row { display: flex; gap: 6px; align-items: flex-end; }
-.ai-input { flex: 1 1 auto; min-width: 0; resize: none; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--bg); padding: 7px 9px; line-height: 1.4; max-height: 160px; font-family: var(--sans); }
-.ai-input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
-.ai-send { width: 34px; height: 34px; padding: 0; flex: none; }
-.ai-usage { font-size: 11px; color: var(--fg-faint); min-height: 13px; }
+.ai-composer { flex: none; border-top: 1px solid var(--border); padding: 8px 10px 7px; display: flex; flex-direction: column; gap: 4px; }
+.ai-box { display: flex; flex-direction: column; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--bg); overflow: hidden; }
+.ai-box:focus-within { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.ai-context { display: flex; align-items: center; gap: 5px; min-width: 0; margin: 7px 9px 0; padding: 2px 7px; align-self: flex-start; max-width: calc(100% - 18px); border-radius: 999px; background: var(--surface); font-size: 11.5px; color: var(--fg-muted); }
+.ai-context:empty { display: none; }
+.ai-context .icon { flex: none; }
+.ai-context-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.ai-context-where { flex: none; }
+.ai-context-where:not(:empty)::before { content: '·'; margin-right: 5px; }
+.ai-input { resize: none; border: 0; border-radius: 0; background: none; padding: 8px 10px 4px; line-height: 1.4; max-height: 160px; font-family: var(--sans); }
+.ai-input:focus { outline: none; }
+.ai-box-bar { display: flex; align-items: center; gap: 4px; padding: 3px 5px 5px 6px; }
+.ai-box-bar .ai-model { height: 24px; border-color: transparent; background: none; color: var(--fg-muted); max-width: 110px; padding: 0 2px; border-radius: 6px; }
+.ai-box-bar .ai-model:hover { background: var(--surface); color: var(--fg); }
+.ai-send { width: 30px; height: 30px; padding: 0; flex: none; border-radius: 8px; }
+.ai-usage { font-size: 11px; color: var(--fg-faint); min-height: 13px; padding: 0 3px; }
 .ai-usage.warn { color: var(--warn); font-weight: 600; }
 .before-after { display: inline-flex; gap: 2px; margin-left: 8px; }
 .showing-before .pdf-scroll { box-shadow: inset 0 3px 0 var(--warn); }

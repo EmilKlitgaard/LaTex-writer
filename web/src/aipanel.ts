@@ -1,5 +1,5 @@
 import {
-  api, type AiSettings, type AiUsage, type ChatContext, type ChatMessage, type ChatPart, type Hunk, type ReviewFile, type ReviewSummary, type ServerEvent,
+  api, type AiSettings, type AiUsage, type ChatContext, type ChatMessage, type ChatSummary, type ChatPart, type Hunk, type ReviewFile, type ReviewSummary, type ServerEvent,
 } from './api.ts'
 import { app } from './app.ts'
 import { clear, confirmDialog, h, icon, iconButton, toast } from './dom.ts'
@@ -24,6 +24,13 @@ const MAX_LINES_SHOWN = 14
 /** Past this size every step of the conversation gets expensive; suggest starting over. */
 const LONG_CONVERSATION = 80_000
 
+function formatWhen(t: number): string {
+  if (!t) return ''
+  const d = new Date(t)
+  const sameDay = d.toDateString() === new Date().toDateString()
+  return sameDay ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : d.toLocaleDateString([], { day: 'numeric', month: 'short' })
+}
+
 /** The assistant sidebar: a chat, and the list of changes waiting for a decision. */
 export class AiPanel {
   readonly element: HTMLElement
@@ -34,6 +41,12 @@ export class AiPanel {
   private review: ReviewSummary = { files: [], changeCount: 0, hasBeforePdf: false }
   private listEl: HTMLElement
   private reviewEl: HTMLElement
+  /** The list of changes is tucked into a bar until the user opens it. */
+  private reviewOpen = false
+  private historyEl: HTMLElement
+  private historyOpen = false
+  /** Chats of this project, as last reported by the server. */
+  private chats: ChatSummary[] = []
   private input: HTMLTextAreaElement
   private sendBtn: HTMLButtonElement
   private contextEl: HTMLElement
@@ -50,6 +63,7 @@ export class AiPanel {
     this.listEl.addEventListener('scroll', () => {
       this.stickToBottom = this.listEl.scrollHeight - this.listEl.scrollTop - this.listEl.clientHeight < 40
     })
+    this.historyEl = h('div', { class: 'ai-history', hidden: true, role: 'menu' })
     this.reviewEl = h('div', { class: 'ai-review', hidden: true })
     this.contextEl = h('div', { class: 'ai-context' })
     this.usageEl = h('div', { class: 'ai-usage' })
@@ -71,15 +85,18 @@ export class AiPanel {
     this.element = h('aside', { class: 'pane ai-pane', 'aria-label': 'Assistant' },
       h('div', { class: 'pane-header' },
         icon('sparkle'), h('strong', null, 'Assistant'), h('span', { class: 'grow' }),
-        iconButton('plus', 'New chat', () => void this.reset()),
+        iconButton('history', 'Earlier chats', () => void this.toggleHistory()),
+        iconButton('plus', 'New chat (this one stays in the list)', () => void this.reset()),
         iconButton('close', 'Hide the assistant', () => this.hooks.onClose()),
       ),
+      this.historyEl,
       this.listEl,
       this.reviewEl,
       h('div', { class: 'ai-composer' },
-        this.contextEl,
-        h('div', { class: 'ai-input-row' }, this.input, this.sendBtn),
-        h('div', { class: 'ai-options' }, this.modelSelect, this.effortSelect),
+        h('div', { class: 'ai-box' },
+          this.contextEl,
+          this.input,
+          h('div', { class: 'ai-box-bar' }, this.modelSelect, this.effortSelect, h('span', { class: 'grow' }), this.sendBtn)),
         this.usageEl),
     )
     this.applySettings()
@@ -92,12 +109,13 @@ export class AiPanel {
 
   async refresh(): Promise<void> {
     try {
-      const res = await api<{ ai: AiSettings; chat: { messages: ChatMessage[]; busy: boolean; usage: AiUsage } | null; review: ReviewSummary | null }>('GET', '/api/host/ai/state')
+      const res = await api<{ ai: AiSettings; chat: { messages: ChatMessage[]; busy: boolean; usage: AiUsage; chats: ChatSummary[] } | null; review: ReviewSummary | null }>('GET', '/api/host/ai/state')
       app.ai = res.ai
       this.applySettings()
       this.messages = res.chat?.messages ?? []
       this.busy = res.chat?.busy ?? false
       this.usage = res.chat?.usage ?? {}
+      this.chats = res.chat?.chats ?? []
       this.renderAll()
       this.updateSendButton()
       this.renderUsage()
@@ -159,11 +177,17 @@ export class AiPanel {
         this.usage = e.usage
         this.renderUsage()
         break
-      case 'reset':
-        this.messages = []
-        this.usage = { ...this.usage, context: undefined }
+      case 'loaded':
+        // A chat was started, opened or deleted: show whichever one is in use now.
+        this.messages = e.messages
+        this.busy = e.busy
+        this.usage = e.usage ?? {}
+        this.chats = e.chats ?? []
+        this.stickToBottom = true
         this.renderAll()
         this.renderUsage()
+        this.updateSendButton()
+        if (this.historyOpen) this.renderHistory()
         break
       case 'settings':
         app.ai = e.ai
@@ -199,8 +223,76 @@ export class AiPanel {
 
   private async reset(): Promise<void> {
     if (!this.messages.length) return
+    this.closeHistory()
     try {
       await api('POST', '/api/host/ai/reset', {})
+    } catch (err) {
+      toast((err as Error).message, 'error')
+    }
+  }
+
+  // ---- earlier chats ------------------------------------------------------------------
+
+  private closeHistory(): void {
+    this.historyOpen = false
+    this.historyEl.hidden = true
+    document.removeEventListener('mousedown', this.onOutside, true)
+    document.removeEventListener('keydown', this.onEscape, true)
+  }
+
+  private onOutside = (e: MouseEvent): void => {
+    const target = e.target as Node
+    // The button that opens the list toggles it itself.
+    if (!this.historyEl.contains(target) && !(target as Element).closest?.('[aria-label="Earlier chats"]')) this.closeHistory()
+  }
+
+  private onEscape = (e: KeyboardEvent): void => {
+    if (e.key === 'Escape') this.closeHistory()
+  }
+
+  private async toggleHistory(): Promise<void> {
+    if (this.historyOpen) return this.closeHistory()
+    try {
+      const res = await api<{ chat: { chats: ChatSummary[] } | null }>('GET', '/api/host/ai/state')
+      this.chats = res.chat?.chats ?? []
+    } catch {}
+    this.historyOpen = true
+    this.historyEl.hidden = false
+    this.renderHistory()
+    document.addEventListener('mousedown', this.onOutside, true)
+    document.addEventListener('keydown', this.onEscape, true)
+  }
+
+  private renderHistory(): void {
+    clear(this.historyEl)
+    this.historyEl.append(h('div', { class: 'ai-history-head' }, 'Chats in this project (the 10 newest are kept)'))
+    if (!this.chats.length) this.historyEl.append(h('div', { class: 'ai-history-empty muted' }, 'No chats yet.'))
+    for (const c of this.chats) {
+      this.historyEl.append(h('div', { class: `ai-history-row ${c.active ? 'current' : ''}` },
+        h('button', {
+          class: 'ai-history-open', type: 'button', role: 'menuitem', title: c.active ? 'The chat you are in' : 'Open this chat and continue it',
+          onclick: () => void this.openChat(c),
+        }, h('span', { class: 'ai-history-title' }, c.title), h('span', { class: 'ai-history-date' }, c.active ? 'Current' : formatWhen(c.t))),
+        h('button', { class: 'icon-btn', type: 'button', title: 'Delete this chat', 'aria-label': `Delete chat: ${c.title}`, onclick: () => void this.deleteChat(c) }, icon('trash', 14)),
+      ))
+    }
+  }
+
+  private async openChat(c: ChatSummary): Promise<void> {
+    this.closeHistory()
+    if (c.active) return
+    try {
+      await api('POST', '/api/host/ai/open', { id: c.id })
+    } catch (err) {
+      toast((err as Error).message, 'error')
+    }
+  }
+
+  private async deleteChat(c: ChatSummary): Promise<void> {
+    const ok = await confirmDialog({ title: 'Delete chat', message: `Delete "${c.title}"? This cannot be undone.`, confirmLabel: 'Delete', danger: true })
+    if (!ok) return
+    try {
+      await api('POST', '/api/host/ai/delete', { id: c.id })
     } catch (err) {
       toast((err as Error).message, 'error')
     }
@@ -232,7 +324,7 @@ export class AiPanel {
     clear(this.contextEl)
     if (!c.file) return
     const lines = c.selection ? (c.selectionEnd ?? 0) - (c.selectionStart ?? 0) + 1 : 0
-    this.contextEl.append(icon('file', 13), ` ${c.file}`, lines ? ` · ${lines} line${lines === 1 ? '' : 's'} selected` : c.line ? ` · line ${c.line}` : '')
+    this.contextEl.append(icon('file', 13), h('span', { class: 'ai-context-name' }, c.file), h('span', { class: 'ai-context-where' }, lines ? `${lines} line${lines === 1 ? '' : 's'} selected` : c.line ? `line ${c.line}` : ''))
     this.contextEl.title = 'The assistant is told which file you have open and what you have selected'
   }
 
@@ -241,10 +333,10 @@ export class AiPanel {
     const bits: string[] = []
     const context = this.usage.context
     const long = typeof context === 'number' && context > LONG_CONVERSATION && this.messages.length > 0
-    if (typeof context === 'number' && this.messages.length) bits.push(`Conversation ${Math.round(context / 1000)}k tokens`)
+    if (typeof context === 'number' && this.messages.length) bits.push(`${Math.round(context / 1000)}k tokens in this chat`)
     const u = this.usage.fiveHour
     const pct = typeof u === 'number' ? Math.round(u * 100) : null
-    if (pct !== null) bits.push(`${pct}% of your plan's 5-hour limit used`)
+    if (pct !== null) bits.push(`${pct}% of your 5-hour limit`)
     this.usageEl.append(bits.join(' · '))
     if (long) {
       this.usageEl.append(h('br'), 'Long conversation: every step re-reads it. ',
@@ -338,15 +430,37 @@ export class AiPanel {
     clear(this.reviewEl)
     const r = this.review
     this.reviewEl.hidden = r.changeCount === 0
-    if (!r.changeCount) return
+    if (!r.changeCount) {
+      this.reviewOpen = false
+      return
+    }
+    let added = 0
+    let removed = 0
+    for (const f of r.files) for (const x of f.hunks) {
+      added += x.newLines.length
+      removed += x.oldLines.length
+    }
+    const files = r.files.length
+    this.reviewEl.classList.toggle('open', this.reviewOpen)
     this.reviewEl.append(h('div', { class: 'ai-review-head' },
-      h('strong', { class: 'grow' }, `${r.changeCount} change${r.changeCount === 1 ? '' : 's'} to review`),
+      h('button', {
+        class: 'ai-review-toggle grow', type: 'button', 'aria-expanded': String(this.reviewOpen),
+        title: this.reviewOpen ? 'Hide the changes' : 'Show the changes',
+        onclick: () => {
+          this.reviewOpen = !this.reviewOpen
+          this.renderReview()
+        },
+      },
+      icon('chevron', 14),
+      h('strong', null, `${files} file${files === 1 ? '' : 's'} changed`),
+      h('span', { class: 'ai-review-lines' }, h('span', { class: 'ai-lines-added' }, `+${added}`), ' ', h('span', { class: 'ai-lines-removed' }, `−${removed}`))),
       h('button', { class: 'btn btn-small', type: 'button', onclick: async () => {
         const ok = r.changeCount < 2 || await confirmDialog({ title: 'Decline all changes', message: `Undo all ${r.changeCount} pending changes and put the earlier text back?`, confirmLabel: 'Decline all', danger: true })
         if (ok) void this.decide('decline')
       } }, 'Decline all'),
       h('button', { class: 'btn btn-small btn-primary', type: 'button', onclick: () => void this.decide('accept') }, 'Accept all'),
     ))
+    if (!this.reviewOpen) return
     const list = h('div', { class: 'ai-review-list' })
     for (const file of r.files) list.append(...this.fileBlocks(file))
     this.reviewEl.append(list)
@@ -355,9 +469,9 @@ export class AiPanel {
   private fileBlocks(file: ReviewFile): HTMLElement[] {
     if (file.status === 'added') {
       const lines = file.hunks.flatMap((x) => x.newLines)
-      return [this.hunkBlock(file.path, `${file.path} (new file)`, 1, [], lines, undefined)]
+      return [this.hunkBlock(file.path, 'new file', 1, [], lines, undefined)]
     }
-    return file.hunks.map((x) => this.hunkBlock(file.path, `${file.path}:${x.newStart + 1}`, x.newStart + 1, x.oldLines, x.newLines, x))
+    return file.hunks.map((x) => this.hunkBlock(file.path, `line ${x.newStart + 1}`, x.newStart + 1, x.oldLines, x.newLines, x))
   }
 
   private hunkBlock(path: string, title: string, line: number, oldLines: string[], newLines: string[], hunk: Hunk | undefined): HTMLElement {
@@ -369,7 +483,11 @@ export class AiPanel {
     }
     return h('div', { class: 'hunk' },
       h('div', { class: 'hunk-head' },
-        h('button', { class: 'link hunk-where', type: 'button', title: 'Show in the editor', onclick: () => this.hooks.onJump(path, line) }, title),
+        h('button', { class: 'hunk-where', type: 'button', title: `Show ${path} in the editor`, onclick: () => this.hooks.onJump(path, line) },
+          icon('file', 13),
+          h('span', { class: 'hunk-name' }, path.split('/').pop()),
+          path.includes('/') ? h('span', { class: 'hunk-dir' }, path.slice(0, path.lastIndexOf('/'))) : null,
+          h('span', { class: 'hunk-at' }, title)),
         h('span', { class: 'grow' }),
         h('button', { class: 'icon-btn hunk-decline', type: 'button', title: 'Decline: put the earlier text back', 'aria-label': 'Decline this change', onclick: () => void this.decide('decline', path, hunk?.id) }, icon('close', 14)),
         h('button', { class: 'icon-btn hunk-accept', type: 'button', title: 'Accept: keep this change', 'aria-label': 'Accept this change', onclick: () => void this.decide('accept', path, hunk?.id) }, icon('check', 14)),

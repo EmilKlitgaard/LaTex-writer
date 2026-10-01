@@ -5,6 +5,7 @@ import path from 'node:path'
 import { getConfig } from './config.ts'
 import { HttpError, INTERNAL_DIR, sanitizeFolderName, validateEntryName } from './paths.ts'
 import { readProjectSettings, writeProjectSettings } from './project.ts'
+import { PROJECT_NOTES_FILE, PROJECT_NOTES_STARTER } from './notes.ts'
 import { renderTemplate, TEMPLATES, type TemplateId } from './templates.ts'
 
 function requireDir(input: unknown): string {
@@ -174,7 +175,7 @@ export function createProject(wsInput: unknown, nameInput: unknown, templateInpu
   const dir = path.join(ws, folder)
   if (fs.existsSync(dir)) throw new HttpError(409, `A folder named "${folder}" already exists here`)
   fs.mkdirSync(dir)
-  const files = renderTemplate(template, name, getConfig().hostName)
+  const files = { ...renderTemplate(template, name, getConfig().hostName), [PROJECT_NOTES_FILE]: PROJECT_NOTES_STARTER }
   for (const [rel, content] of Object.entries(files)) {
     const abs = path.join(dir, rel)
     fs.mkdirSync(path.dirname(abs), { recursive: true })

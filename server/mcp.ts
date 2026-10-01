@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import type { BuildResult } from './compile.ts'
+import { describeNotes, NOTES_LIMITS, readPreferences, readProjectNotes, updateNotes, NOTES_HEADERS } from './notes.ts'
 import { HttpError, isTextFile, resolveInside } from './paths.ts'
 import { extractText, pageCount, pageGeometry, renderPage, renderSheet, searchText } from './pdfrender.ts'
 import type { Project, TreeNode } from './project.ts'
@@ -38,6 +39,19 @@ How to work efficiently (every step re-sends the whole conversation, so fewer, s
   (from/to) shows detail. Never look at the same page twice without a change in between.
 - To check what the PDF says, use read_pdf_text, with query to find specific text.
 - Keep edits minimal and keep the author's style. Do not reformat text you were not asked to change.
+
+Memory (two Markdown files; project_info and read_notes show both):
+- Project notes (INSTRUCTIONS.md, in the project folder): memory shared by the agents and sessions that
+  work on this project. Follow them. With update_notes (file "project") add what a later session needs:
+  the author's standing instructions for this document, decisions, conventions, structure, open tasks,
+  pitfalls. Do not note what the files already show. Keep it short and current: remove what is done
+  or no longer true.
+- Writing preferences (global, all projects): how the author likes to be written for. Follow them.
+  Do NOT change them unless the author asks you to, or states a lasting preference that clearly
+  applies to all their writing, not just this document. Then use update_notes (file "preferences")
+  with a reason. Anything specific to this document belongs in the project notes.
+- Both files have a size limit. When an update is refused for size, rewrite the whole file shorter
+  with mode "replace" (read_notes first), keeping everything still useful.
 
 Limits of this setup: no shell escape (so no minted), EPS figures do not convert under pdfLaTeX,
 and LuaLaTeX is refused while the project is shared on the network.`
@@ -110,6 +124,26 @@ export const TOOLS: Tool[] = [
         compile: bool('Compile afterwards and report errors (default true)'),
       },
       required: ['path', 'content'],
+    },
+  },
+  {
+    name: 'read_notes',
+    description: 'The current text of the project notes (INSTRUCTIONS.md) and the author\'s writing preferences. Use it before rewriting either file.',
+    inputSchema: { type: 'object', properties: {} },
+    annotations: readOnly,
+  },
+  {
+    name: 'update_notes',
+    description: `Remember something across sessions. file "project": the project notes (INSTRUCTIONS.md), for decisions, conventions, open tasks and anything the next agent needs. file "preferences": the author's global writing preferences; only when the author asked, or stated a lasting preference for all their writing; reason is then required. mode "append" (default) adds a line; "replace" rewrites the whole file, which is how to condense it. Limits: ${NOTES_LIMITS.project} characters for project notes, ${NOTES_LIMITS.preferences} for preferences. Takes effect at once and does not wait for review.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        file: { type: 'string', enum: ['project', 'preferences'] },
+        text: str('The line to add, or, with mode "replace", the complete new Markdown text of the file'),
+        mode: { type: 'string', enum: ['append', 'replace'] },
+        reason: str('For file "preferences": what the author said that justifies the change'),
+      },
+      required: ['file', 'text'],
     },
   },
   {
@@ -273,8 +307,17 @@ export async function callTool(project: Project, name: string, args: Record<stri
           ? review.files.map((f) => `  ${f.path}: ${f.status === 'added' ? 'new file' : plural(f.hunks.length, 'change')}`).join('\n')
           : '  none'
         return text(
-          `Project: ${project.settings.name}\nMain file: ${project.settings.mainFile}\nLast compile: ${describeBuild(project)}\n\nFiles:\n${lines.join('\n')}\n\nChanges waiting for the user's review:\n${pending}`,
+          `Project: ${project.settings.name}\nMain file: ${project.settings.mainFile}\nLast compile: ${describeBuild(project)}\n\nFiles:\n${lines.join('\n')}\n\nChanges waiting for the user's review:\n${pending}\n\n${describeNotes(project)}`,
         )
+      }
+
+      case 'read_notes':
+        return text(`${NOTES_HEADERS.project}\n${readProjectNotes(project).trim()}\n\n${NOTES_HEADERS.preferences}\n${readPreferences().trim()}`)
+
+      case 'update_notes': {
+        const r = updateNotes(project, args)
+        if (!r.ok) throw new ToolError(r.error)
+        return text(r.message)
       }
 
       case 'read_file': {

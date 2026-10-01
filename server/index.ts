@@ -325,6 +325,18 @@ export async function startServer(opts: { port?: number; strictPort?: boolean } 
     return { ok: true }
   })
 
+  app.post('/api/host/ai/open', async (req) => {
+    requireAi(req)
+    requireProject().ai.open(body(req).id)
+    return { ok: true }
+  })
+
+  app.post('/api/host/ai/delete', async (req) => {
+    requireAi(req)
+    requireProject().ai.remove(body(req).id)
+    return { ok: true }
+  })
+
   app.get('/api/host/review/before.pdf', async (req, reply) => {
     requireHost(req)
     const file = requireProject().review.beforePdfPath()

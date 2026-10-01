@@ -168,7 +168,7 @@ test('creating a project applies the structure and opens it', async () => {
   assert.ok(fs.existsSync(path.join(projectDir, '.latexwriter/project.json')))
   assert.equal(res.json.project.name, 'Test: Project')
   const tree = (await host('GET', '/api/project/tree')).json.tree
-  assert.deepEqual(tree.map((n: any) => n.name), ['main.tex', 'references.bib'])
+  assert.deepEqual(tree.map((n: any) => n.name), ['INSTRUCTIONS.md', 'main.tex', 'references.bib'])
   const dup = await host('POST', '/api/host/project/create', { workspace: WORKSPACE, name: 'Test Project', template: 'blank' })
   assert.equal(dup.status, 409)
   const ws = (await host('GET', `/api/host/workspace?path=${encodeURIComponent(WORKSPACE)}`)).json
@@ -184,7 +184,7 @@ test('the project compiles and the PDF lands next to main.tex', async () => {
   const pdf = await fetch(`${HOST}/api/project/pdf`)
   assert.equal((await pdf.text()).slice(0, 5), '%PDF-')
   // No build litter in the project folder.
-  assert.deepEqual(fs.readdirSync(projectDir).sort(), ['.latexwriter', 'main.pdf', 'main.tex', 'references.bib'])
+  assert.deepEqual(fs.readdirSync(projectDir).sort(), ['.latexwriter', 'INSTRUCTIONS.md', 'main.pdf', 'main.tex', 'references.bib'])
 })
 
 test('compiling again without changes keeps the result instead of failing', async () => {
@@ -521,6 +521,31 @@ test('the tool endpoint speaks MCP and refuses web pages', async () => {
   assert.equal((await mcp('tools/list', undefined, { Origin: HOST })).status, 403)
 })
 
+test('agents share memory through INSTRUCTIONS.md in the project and a global preferences file', async () => {
+  const info = (await tool('project_info')).content[0].text
+  assert.match(info, /Project notes \(INSTRUCTIONS\.md[\s\S]*Open tasks and progress[\s\S]*writing preferences[\s\S]*My writing preferences/)
+  assert.ok(fs.existsSync(path.join(projectDir, 'INSTRUCTIONS.md')), 'the notes file lives with the other project files')
+  assert.match(JSON.stringify((await host('GET', '/api/project/tree')).json.tree), /INSTRUCTIONS\.md/)
+
+  // Notes are the agents' own memory: written at once, not held for review.
+  assert.equal((await tool('update_notes', { file: 'project', text: 'Use British spelling.' })).isError, undefined)
+  assert.match((await tool('read_notes')).content[0].text, /- Use British spelling\./)
+  assert.match(fs.readFileSync(path.join(projectDir, 'INSTRUCTIONS.md'), 'utf8'), /- Use British spelling\./)
+  assert.equal((await host('GET', '/api/host/ai/state')).json.review.changeCount, 0)
+
+  // The author's preferences change only with a stated reason.
+  assert.equal((await tool('update_notes', { file: 'preferences', text: 'Short sentences.' })).isError, true)
+  assert.equal((await tool('update_notes', { file: 'preferences', text: 'Short sentences.', reason: 'The author asked for it' })).isError, undefined)
+  assert.match(fs.readFileSync(path.join(HOME, 'Library/Application Support/LaTeXWriter/PREFERENCES.md'), 'utf8'), /- Short sentences\./)
+
+  // Past the size limit an agent must condense the file instead of adding to it.
+  const refused = await tool('update_notes', { file: 'project', text: 'x'.repeat(8100) })
+  assert.equal(refused.isError, true)
+  assert.match(refused.content[0].text, /replace/)
+  assert.equal((await tool('update_notes', { file: 'project', mode: 'replace', text: '# Project notes\n- Condensed.' })).isError, undefined)
+  assert.doesNotMatch((await tool('read_notes')).content[0].text, /British/)
+})
+
 test('assistant edits are live but pending; each change can be accepted or declined', async () => {
   const a = editors[0]
   const original = a.text.toString()
@@ -734,6 +759,32 @@ echo '{"type":"result","is_error":false,"result":"Hi from the stand-in."}'
   await host('POST', '/api/host/ai/send', { text: 'Fresh start' })
   await until(async () => ((await chat()).chat.messages.length === 2 && !(await chat()).chat.busy), 'turn after reset')
   assert.equal(fs.readFileSync(path.join(HOME, 'cli-args.txt'), 'utf8').split('\n').includes('--resume'), false)
+
+  // The earlier chat was kept, and can be reopened and continued.
+  let chats = (await chat()).chat.chats
+  assert.deepEqual(chats.map((c: any) => [c.title, c.active]), [['Fresh start', true], ['Tighten the abstract', false]])
+  assert.equal((await host('POST', '/api/host/ai/open', { id: chats[1].id })).status, 200)
+  const reopened = (await chat()).chat
+  assert.equal(reopened.messages.length, 6)
+  assert.deepEqual(reopened.chats.map((c: any) => [c.title, c.active]), [['Tighten the abstract', true], ['Fresh start', false]])
+  await host('POST', '/api/host/ai/send', { text: 'Continue' })
+  await until(async () => ((await chat()).chat.messages.length === 8 && !(await chat()).chat.busy), 'turn in a reopened chat')
+  assert.ok(fs.readFileSync(path.join(HOME, 'cli-args.txt'), 'utf8').split('\n').includes('--resume'), 'the reopened chat resumes its session')
+
+  // At most 10 chats are kept, the oldest go first, and any chat can be deleted.
+  for (let i = 1; i <= 11; i++) {
+    await host('POST', '/api/host/ai/reset', {})
+    await host('POST', '/api/host/ai/send', { text: `Chat ${i}` })
+    await until(async () => !(await chat()).chat.busy && (await chat()).chat.messages.length === 2, `chat ${i}`)
+  }
+  chats = (await chat()).chat.chats
+  assert.equal(chats.length, 10)
+  assert.deepEqual([chats[0].title, chats[0].active, chats[9].title], ['Chat 11', true, 'Chat 2'])
+  await host('POST', '/api/host/ai/delete', { id: chats[5].id })
+  assert.equal((await chat()).chat.chats.length, 9)
+  await host('POST', '/api/host/ai/delete', { id: chats[0].id })
+  const afterDelete = (await chat()).chat
+  assert.deepEqual([afterDelete.messages.length, afterDelete.chats.length, afterDelete.chats.some((c: any) => c.active)], [0, 8, false])
 
   // Turned off, the add-on disappears completely: no chat and no tool endpoint.
   assert.equal((await host('POST', '/api/host/settings', { aiEnabled: false })).json.ai.enabled, false)

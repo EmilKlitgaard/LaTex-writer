@@ -30,6 +30,7 @@ export type ReviewFile = { path: string; status: 'modified' | 'added'; hunks: Hu
 export type ReviewSummary = { files: ReviewFile[]; changeCount: number; hasBeforePdf: boolean }
 export type ChatPart = { kind: 'text'; text: string } | { kind: 'tool'; id: string; label: string; status: 'running' | 'done' | 'error'; parent?: string }
 export type ChatMessage = { id: string; role: 'user' | 'assistant'; parts: ChatPart[]; error?: string; t: number }
+export type ChatSummary = { id: string; title: string; t: number; active: boolean }
 export type ChatContext = { file?: string; line?: number; selection?: string; selectionStart?: number; selectionEnd?: number }
 export type AiSettings = { enabled: boolean; available: boolean; model: string; models: string[]; effort: string; efforts: string[] }
 export type AiUsage = { fiveHour?: number; sevenDay?: number; resetsAt?: number; context?: number }
