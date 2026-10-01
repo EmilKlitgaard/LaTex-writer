@@ -399,7 +399,7 @@ export class AiPanel {
       }
       const last = this.messages[this.messages.length - 1]
       if (this.busy && last?.id === m.id && !m.error) node.append(h('div', { class: 'ai-thinking' }, m.parts.length ? '' : 'Thinking…'))
-      if (m.error) node.append(h('div', { class: m.error === 'Stopped.' ? 'ai-note' : 'ai-error' }, m.error))
+      if (m.error) node.append(h('div', { class: m.error === 'Stopped.' || m.error === 'Interrupted.' ? 'ai-note' : 'ai-error' }, m.error))
     }
     const existing = this.nodes.get(id)
     if (existing) existing.replaceWith(node)

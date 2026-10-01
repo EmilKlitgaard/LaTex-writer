@@ -796,6 +796,38 @@ echo '{"type":"result","is_error":false,"result":"Hi from the stand-in."}'
   delete process.env.ANTHROPIC_API_KEY
 })
 
+test('a turn cut off by closing the app is picked up again when the assistant is opened', async () => {
+  const { AiChat } = await import('../server/ai.ts')
+  const root = fs.mkdtempSync(path.join(HOME, 'resume-'))
+  fs.mkdirSync(path.join(root, '.latexwriter'))
+  const session = '22222222-2222-2222-2222-222222222222'
+  const msg = (role: string, text: string) => ({ id: `${role}-${text}`, role, parts: [{ kind: 'text', text }], t: Date.now() })
+  const write = (chat: object): void => fs.writeFileSync(path.join(root, '.latexwriter', 'ai-chat.json'), JSON.stringify({ active: chat, archive: [] }))
+  write({ id: 'c1', sessionId: session, interrupted: true, messages: [msg('user', 'Rewrite the intro'), msg('assistant', 'Working on it')] })
+
+  const chat = new AiChat({ root, overview: () => 'Project "Resume".' })
+  chat.resumeInterrupted('sonnet', 'low')
+  await until(() => !chat.busy && chat.messages.length === 3, 'the interrupted turn to be picked up')
+  assert.equal(chat.messages[1].error, 'Interrupted.')
+  assert.match(chat.messages[2].parts.map((p: any) => p.text ?? '').join(''), /stand-in/)
+  const args = fs.readFileSync(path.join(HOME, 'cli-args.txt'), 'utf8').split('\n')
+  assert.equal(args[args.indexOf('--resume') + 1], session, 'continues the same conversation')
+  assert.match(fs.readFileSync(path.join(HOME, 'cli-stdin.txt'), 'utf8'), /cut off/)
+  // Once finished it is not started again.
+  chat.resumeInterrupted('sonnet', 'low')
+  assert.equal(chat.busy, false)
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, '.latexwriter', 'ai-chat.json'), 'utf8')).active.interrupted, false)
+
+  // A user pressing Stop is not an interruption, and neither is a turn that keeps dying.
+  write({ id: 'c2', sessionId: session, interrupted: true, attempts: 2, messages: [msg('user', 'x'), msg('assistant', 'y')] })
+  const stuck = new AiChat({ root, overview: () => '' })
+  stuck.resumeInterrupted('sonnet', 'low')
+  assert.equal(stuck.busy, false)
+  assert.equal(stuck.messages.length, 2)
+  chat.dispose()
+  stuck.dispose()
+})
+
 test('closing the project flushes edits and snapshots', async () => {
   const [a] = editors
   a.text.insert(0, '% last words\n')

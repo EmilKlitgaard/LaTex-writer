@@ -294,6 +294,9 @@ export async function startServer(opts: { port?: number; strictPort?: boolean } 
   app.get('/api/host/ai/state', async (req) => {
     requireHost(req)
     const project = currentProject()
+    const ai = aiState()
+    // Opening the assistant picks up a turn that was cut off when the app was closed.
+    if (project && getConfig().ai.enabled) project.ai.resumeInterrupted(ai.model as Model, ai.effort as Effort)
     return { ai: aiState(), chat: project && getConfig().ai.enabled ? project.ai.state() : null, review: project ? project.review.summary() : null }
   })
 

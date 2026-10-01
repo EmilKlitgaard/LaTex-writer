@@ -120,7 +120,15 @@ function toolLabel(name: string, input: Record<string, unknown>): string {
 }
 
 /** One conversation: its messages and the Claude Code session that holds its context. */
-type Chat = { id: string; sessionId: string | null; messages: ChatMessage[] }
+type Chat = {
+  id: string
+  sessionId: string | null
+  messages: ChatMessage[]
+  /** A turn was started and has not finished: if it is still set when the app starts, the app was closed mid-turn. */
+  interrupted?: boolean
+  /** How many times in a row an interrupted turn was picked up again. */
+  attempts?: number
+}
 type Saved = { active?: Chat; archive?: Chat[]; sessionId?: string | null; messages?: ChatMessage[] }
 export type ChatSummary = { id: string; title: string; t: number; active: boolean }
 /** Chats kept per project, the one in use included. The oldest are dropped past this. */
@@ -144,6 +152,7 @@ export class AiChat {
   private file: string
   private cwd: string
   private active: Chat = newChat()
+  private disposed = false
   /** Earlier chats, newest first. */
   private archive: Chat[] = []
   private child: ChildProcess | null = null
@@ -268,6 +277,8 @@ export class AiChat {
   stop(): void {
     const child = this.child
     if (!child) return
+    // The user chose to end this turn, so it must not be picked up again later.
+    this.active.interrupted = false
     this.stopRequested = true
     child.kill('SIGTERM')
     setTimeout(() => child.exitCode === null && child.kill('SIGKILL'), 2000).unref()
@@ -295,7 +306,10 @@ export class AiChat {
     const user: ChatMessage = { id: crypto.randomUUID(), role: 'user', parts: [{ kind: 'text', text }], t: Date.now() }
     const reply: ChatMessage = { id: crypto.randomUUID(), role: 'assistant', parts: [], t: Date.now() }
     this.messages.push(user, reply)
+    this.active.interrupted = true
+    this.active.attempts = 0
     this.trim()
+    this.persist()
     this.current = reply
     this.emit({ kind: 'message', message: user })
     this.emit({ kind: 'message', message: reply })
@@ -426,7 +440,7 @@ export class AiChat {
 
     let finished = false
     const finish = (code: number | null, signal: NodeJS.Signals | null, spawnError?: Error): void => {
-      if (finished) return
+      if (finished || this.disposed) return
       finished = true
       if (this.child === child) this.child = null
       // The saved conversation is gone on Claude Code's side (cleared, or a new Mac): start a fresh one.
@@ -443,6 +457,7 @@ export class AiChat {
         reply.error = 'Claude Code is not signed in. Open Terminal, run "claude", and sign in with your Claude account.'
       }
       this.current = null
+      this.active.interrupted = false
       this.persist()
       this.emit({ kind: 'done', message: reply })
       this.emit({ kind: 'busy', busy: false })
@@ -451,12 +466,40 @@ export class AiChat {
     child.on('close', (code, signal) => finish(code, signal))
   }
 
+  /**
+   * Picks up a turn that the app was closed in the middle of (quit, crash, project closed). Called
+   * when the panel opens, so nothing runs for a user who is not looking at the assistant.
+   */
+  resumeInterrupted(model: Model, effort: Effort): void {
+    const chat = this.active
+    if (!chat.interrupted || this.busy || this.disposed) return
+    const cli = findClaudeCli()
+    if (!cli) return
+    // A turn that keeps dying (for example because it brings the app down) is not retried for ever.
+    if ((chat.attempts ?? 0) >= 2) {
+      chat.interrupted = false
+      this.persist()
+      return
+    }
+    chat.attempts = (chat.attempts ?? 0) + 1
+    const last = this.messages[this.messages.length - 1]
+    if (last && last.role === 'assistant' && !last.error) last.error = 'Interrupted.'
+    const reply: ChatMessage = { id: crypto.randomUUID(), role: 'assistant', parts: [], t: Date.now() }
+    this.messages.push(reply)
+    this.current = reply
+    this.emit({ kind: 'message', message: reply })
+    const note = 'The app was closed while you were working on the previous request, so it was cut off. Check the current state of the files, then carry on and finish that request. Do not redo what is already done.'
+    this.run(cli, this.sessionId ? note : `${this.host.overview()}\n\n${note}`, model, effort, reply, true)
+  }
+
   dispose(): void {
+    this.disposed = true
     const child = this.child
     this.child = null
     child?.kill('SIGKILL')
     if (this.current) {
-      this.current.error = 'Stopped.'
+      // Left marked as interrupted: it is picked up again the next time the assistant is opened.
+      if (!this.current.error) this.current.error = 'Interrupted.'
       this.persist()
     }
   }
