@@ -1,6 +1,6 @@
 import { api, q, type Sharing } from './api.ts'
 import { app } from './app.ts'
-import { leaveProject, openSettingsDialog, openShareDialog } from './dialogs.ts'
+import { leaveProject, openSettingsDialog } from './dialogs.ts'
 import { clear, closeOverlays, confirmDialog, h, icon, iconButton, openModal, promptDialog, showMenu, store, timeAgo, toast } from './dom.ts'
 
 type Recent = { path: string; name: string; lastOpened: number; exists: boolean }
@@ -28,7 +28,6 @@ export function mountHome(root: HTMLElement): () => void {
     h('header', { class: 'home-header' },
       h('h1', null, 'LaTeX Writer'),
       h('span', { class: 'grow' }),
-      h('button', { class: 'btn', type: 'button', onclick: openShareDialog }, icon('share'), ' Share'),
       iconButton('settings', 'Settings', () => openSettingsDialog({ texFiles: [], onLeave: () => {} })),
     ),
     main,

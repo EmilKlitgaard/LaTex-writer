@@ -54,12 +54,13 @@ if [ "$(readlink node_modules 2>/dev/null || true)" != "$DEPS/node_modules" ]; t
   ln -s "$DEPS/node_modules" node_modules
 fi
 
-# Rebuild the interface when any of its sources is newer than the last build.
+# Rebuild the interface when any of its sources is newer than the last build, or (for a copy that
+# came inside a downloaded app, marked by .version) when that copy is another version.
 STAMP="$BUILD/.built"
-if [ ! -f "$STAMP" ] || [ -n "$(find web vite.config.ts package-lock.json -newer "$STAMP" -type f -print -quit)" ]; then
+if [ ! -f "$STAMP" ] || { [ -f .version ] && ! cmp -s .version "$STAMP"; } || [ -n "$(find web vite.config.ts package-lock.json -newer "$STAMP" -type f -print -quit)" ]; then
   echo "Building the interface..."
   npx vite build
-  touch "$STAMP"
+  if [ -f .version ]; then cp .version "$STAMP"; else : > "$STAMP"; fi
 fi
 
 exec node server/index.ts "$@"

@@ -2,7 +2,7 @@ import { AiPanel } from './aipanel.ts'
 import { api, q, type BuildResult, type Hunk, type ProjectIndex, type ReviewSummary, type ServerEvent, type TreeNode } from './api.ts'
 import { app } from './app.ts'
 import { CodeEditor } from './codeeditor.ts'
-import { initials, openHistoryDialog, openSettingsDialog, openShareDialog, texFilesOf, textFilesOf } from './dialogs.ts'
+import { initials, openConnectDialog, openHistoryDialog, openSettingsDialog, openShareDialog, texFilesOf, textFilesOf } from './dialogs.ts'
 import { clear, closeOverlays, debounce, h, icon, iconButton, showMenu, store, toast } from './dom.ts'
 import { FileTree } from './filetree.ts'
 import { parseOutline, type OutlineItem } from './latex.ts'
@@ -423,7 +423,11 @@ export function mountWorkbench(root: HTMLElement, hooks: WorkbenchHooks): () => 
         ? { label: 'Save PDF to Downloads', icon: 'download', onclick: () => void exportPdf() }
         : { label: 'Download PDF', icon: 'download', onclick: downloadPdf },
       { label: 'Download project as .zip', icon: 'download', onclick: () => downloadUrl('/api/project/zip') },
-      ...(isHost ? ['separator' as const, { label: 'Share on your network…', icon: 'share', onclick: openShareDialog }] : []),
+      ...(isHost ? [
+        'separator' as const,
+        { label: 'Share on your network…', icon: 'share', onclick: openShareDialog },
+        ...(app.ai ? [{ label: 'Connect an AI app…', icon: 'sparkle', onclick: openConnectDialog }] : []),
+      ] : []),
     ])
   }
 

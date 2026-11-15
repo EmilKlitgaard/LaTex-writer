@@ -27,8 +27,34 @@ let sourceDefaultsKey = "SourceFolder"     // a folder picked by hand, when the 
 
 let appHome = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/LaTeXWriter")
 
-/// The LaTeX Writer source folder (the one with scripts/launch.sh). Saved into Info.plist at build time.
+/// A release build carries LaTeX Writer inside the app (Contents/Resources/app). It is run from a
+/// copy in Application Support, since the app itself is read-only and its dependencies and build
+/// go next to it. The copy is replaced when the app brings another version (.version differs).
+func bundledSource() -> URL? {
+    let fm = FileManager.default
+    guard let inside = Bundle.main.resourceURL?.appendingPathComponent("app"),
+          fm.isExecutableFile(atPath: inside.appendingPathComponent("scripts/launch.sh").path) else { return nil }
+    let dest = appHome.appendingPathComponent("app")
+    func version(_ u: URL) -> String? { try? String(contentsOf: u.appendingPathComponent(".version"), encoding: .utf8) }
+    if version(inside) == nil || version(inside) != version(dest) {
+        let staging = appHome.appendingPathComponent("app.new")
+        do {
+            try fm.createDirectory(at: appHome, withIntermediateDirectories: true)
+            try? fm.removeItem(at: staging)
+            try fm.copyItem(at: inside, to: staging)
+            try? fm.removeItem(at: dest)
+            try fm.moveItem(at: staging, to: dest)
+        } catch {
+            return nil
+        }
+    }
+    return dest
+}
+
+/// The LaTeX Writer source folder (the one with scripts/launch.sh): the copy a release build brings,
+/// else the folder this app was built from (saved into Info.plist), else one picked by hand.
 func sourceFolder() -> URL? {
+    if let bundled = bundledSource() { return bundled }
     let fm = FileManager.default
     var candidates: [String] = []
     if let picked = UserDefaults.standard.string(forKey: sourceDefaultsKey) { candidates.append(picked) }

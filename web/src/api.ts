@@ -38,6 +38,8 @@ export type AiSettings = {
   enabled: boolean
   /** The agent that runs the chat, and every agent the app knows (found on this Mac or not). */
   provider: string; providerName: string; plan: string; providers: AiProvider[]
+  /** The tool endpoint for MCP clients outside the app. */
+  mcpUrl: string
   available: boolean; model: string; models: { id: string; label: string }[]; effort: string; efforts: string[]; skills?: SkillInfo[]
 }
 export type AiActivity = { label: string; started: number }

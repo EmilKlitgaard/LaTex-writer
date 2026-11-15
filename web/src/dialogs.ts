@@ -138,6 +138,50 @@ export async function leaveProject<T>(call: (force: boolean) => Promise<T>): Pro
   }
 }
 
+// ---- connecting other AI apps ------------------------------------------------------------
+
+/**
+ * How to use this app's tools from outside it: the commands for the agents found on this Mac, the
+ * plain MCP address and config for any other MCP app, and a prompt any AI can follow to connect.
+ */
+export function openConnectDialog(): void {
+  const ai = app.ai
+  const m = openModal({ title: 'Connect an AI app', wide: true })
+  m.footer.appendChild(h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, 'Done'))
+  if (!ai) return void m.body.append(h('p', { class: 'muted' }, 'Only the host can connect AI apps.'))
+  const url = ai.mcpUrl
+  const copyRow = (text: string, what: string, multiline = false): HTMLElement =>
+    h('div', { class: 'row url-row connect-row' },
+      multiline ? h('pre', { class: 'grow url small connect-block' }, text) : h('code', { class: 'grow url small' }, text),
+      h('button', { class: 'btn btn-small', type: 'button', title: `Copy ${what}`, onclick: async () => toast((await copyText(text)) ? `${what.replace(/^./, (c) => c.toUpperCase())} copied` : 'Could not copy. Select the text and copy it.', 'info') }, icon('copy'), ' Copy'))
+  const withUrl = JSON.stringify({ mcpServers: { latexwriter: { url } } }, null, 2)
+  const withCommand = JSON.stringify({ mcpServers: { latexwriter: { command: 'npx', args: ['-y', 'mcp-remote', url] } } }, null, 2)
+  const prompt = `Connect to LaTeX Writer, a LaTeX editor running on this Mac, through its MCP server (Model Context Protocol). Add an MCP server named "latexwriter" that uses the streamable HTTP transport at ${url}. It needs no authentication and only answers on this Mac while LaTeX Writer is running. If you can only start local commands, run it through mcp-remote instead: command "npx" with the arguments "-y", "mcp-remote", "${url}". Then call its project_info tool to check that it works, and follow the instructions the server sends: it works on the project that is open in the app, and your edits wait for my review there.`
+  const found = ai.providers.filter((p) => p.available)
+  const parts: (HTMLElement | null)[] = [
+    h('p', null, 'LaTeX Writer\'s tools (read, search, edit, compile, check the PDF) are an MCP server. Any AI app that supports MCP can use them on the project that is open here. Edits wait for your review, as with the built-in assistant.'),
+    ai.enabled ? null : h('p', { class: 'notice warn' }, 'The AI assistant is turned off in Settings, and with it the tools. Turn it on first.'),
+    found.length ? h('div', { class: 'section' },
+      h('h3', null, 'Found on this Mac'),
+      h('p', { class: 'muted small' }, 'Run once in Terminal while LaTeX Writer is running:'),
+      ...found.map((p) => h('div', null, h('div', { class: 'small connect-label' }, p.name), copyRow(p.mcpCommand, 'the command')))) : null,
+    h('div', { class: 'section' },
+      h('h3', null, 'Any other MCP app'),
+      h('div', { class: 'small connect-label' }, 'Server address (streamable HTTP, no sign-in)'),
+      copyRow(url, 'the address'),
+      h('div', { class: 'small connect-label' }, 'Config for apps that take a URL (Cursor, VS Code, Windsurf, …)'),
+      copyRow(withUrl, 'the config', true),
+      h('div', { class: 'small connect-label' }, 'Config for apps that can only start a local command (needs Node.js)'),
+      copyRow(withCommand, 'the config', true)),
+    h('div', { class: 'section' },
+      h('h3', null, 'Or let the AI do it'),
+      h('p', { class: 'muted small' }, 'Paste this into an AI agent that can change its own settings:'),
+      copyRow(prompt, 'the prompt', true)),
+    h('p', { class: 'muted small' }, 'The address only works on this Mac and only while LaTeX Writer is running. Web pages cannot use it.'),
+  ]
+  m.body.append(...parts.filter((x): x is HTMLElement => x !== null))
+}
+
 // ---- settings --------------------------------------------------------------------------
 
 export function openSettingsDialog(opts: { texFiles: string[]; onLeave: () => void }): void {
@@ -226,14 +270,10 @@ export function openSettingsDialog(opts: { texFiles: string[]; onLeave: () => vo
         ? `A chat in the right sidebar that can edit, compile and check the document. It runs ${a.providerName} on this Mac and uses ${a.plan}, not an API key. It can only use this app's tools.`
         : `${a.providerName} was not found on this Mac. Install it and sign in, then choose Search again.`
       clear(commands)
-      const found = a.providers.filter((p) => p.available)
-      if (!found.length) return
-      commands.append(h('p', { class: 'muted small' }, 'To use the same tools from a session outside the app, run this once in Terminal while LaTeX Writer is running:'))
-      for (const p of found) {
-        commands.append(h('div', { class: 'row url-row' },
-          h('code', { class: 'grow url small', title: p.name }, p.mcpCommand),
-          h('button', { class: 'btn btn-small', type: 'button', title: `Copy the command for ${p.name}`, onclick: async () => toast((await copyText(p.mcpCommand)) ? 'Command copied' : 'Could not copy. Select the text and copy it.', 'info') }, icon('copy'), ' Copy')))
-      }
+      commands.append(h('p', { class: 'muted small' },
+        'Other AI apps can use the same tools: ',
+        h('button', { class: 'link', type: 'button', onclick: () => openConnectDialog() }, 'Connect an AI app…'),
+        ' (also under Share).'))
     }
     choice.addEventListener('change', async () => {
       try {

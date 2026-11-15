@@ -48,7 +48,7 @@ const ICONS: Record<string, string> = {
   upload: '<path d="M8 10.5V3m0 0L5 6m3-3 3 3M3 10.5v2h10v-2"/>',
   download: '<path d="M8 3v7.5m0 0-3-3m3 3 3-3M3 12.5h10"/>',
   trash: '<path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.5 8.5h6l.5-8.5"/>',
-  settings: '<circle cx="8" cy="8" r="2"/><path d="M8 1.8v1.7M8 12.5v1.7M1.8 8h1.7M12.5 8h1.7M3.6 3.6l1.2 1.2M11.2 11.2l1.2 1.2M12.4 3.6l-1.2 1.2M4.8 11.2l-1.2 1.2"/>',
+  settings: '<path d="M6.8 1.8h2.4l.4 1.7 1.2.7 1.7-.5 1.2 2.1-1.3 1.2v1.4l1.3 1.2-1.2 2.1-1.7-.5-1.2.7-.4 1.7H6.8l-.4-1.7-1.2-.7-1.7.5-1.2-2.1 1.3-1.2V7.3L2.3 6.1l1.2-2.1 1.7.5 1.2-.7z"/><circle cx="8" cy="8" r="2"/>',
   share: '<circle cx="4" cy="8" r="1.7"/><circle cx="11.5" cy="4" r="1.7"/><circle cx="11.5" cy="12" r="1.7"/><path d="m5.5 7.2 4.5-2.4M5.5 8.8l4.5 2.4"/>',
   history: '<path d="M2.5 8a5.5 5.5 0 1 0 1.7-4"/><path d="M2.5 3v2.5H5M8 5v3.2l2 1.3"/>',
   refresh: '<path d="M13 8a5 5 0 1 1-1.5-3.5"/><path d="M13 3v2.5h-2.5"/>',
