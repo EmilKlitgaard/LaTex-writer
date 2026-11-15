@@ -491,7 +491,7 @@ button.ai-skill-chip:hover { border-color: var(--accent); background: var(--acce
 .ai-request-note { margin: 0; font-size: 11.5px; line-height: 1.35; }
 .ai-request-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 2px; flex-wrap: wrap; }
 .ai-send { width: 30px; height: 30px; padding: 0; flex: none; border-radius: 8px; }
-.ai-usage { font-size: 11px; color: var(--fg-faint); min-height: 13px; padding: 0 3px; }
+.ai-usage { font-size: 11px; line-height: 13px; color: var(--fg-faint); padding: 0 3px; }
 .ai-usage.warn { color: var(--warn); font-weight: 600; }
 .before-after { display: inline-flex; gap: 2px; margin-left: 8px; }
 .showing-before .pdf-scroll { box-shadow: inset 0 3px 0 var(--warn); }
