@@ -571,6 +571,9 @@ export class AiPanel {
     const context = this.usage.context
     const long = typeof context === 'number' && context > LONG_CONVERSATION && this.messages.length > 0
     if (typeof context === 'number' && this.messages.length) bits.push(`${Math.round(context / 1000)}k tokens in this chat`)
+    // Codex reports a whole reply (every step added up, mostly from cache), not the chat's size.
+    const last = this.usage.lastReply
+    if (!context && last && this.messages.length) bits.push(`Last reply read ${Math.round(last.input / 1000)}k tokens (${Math.round(last.cached / 1000)}k from cache)`)
     const u = this.usage.fiveHour
     const pct = typeof u === 'number' ? Math.round(u * 100) : null
     if (pct !== null) bits.push(`${pct}% of your 5-hour limit`)

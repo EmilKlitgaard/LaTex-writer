@@ -32,7 +32,16 @@ export type ChatMessage = { id: string; role: 'user' | 'assistant'; parts: ChatP
 export type ChatContext = { file?: string; line?: number; selection?: string; selectionStart?: number; selectionEnd?: number }
 /** What the assistant is doing right now, for the line under its reply. started: when the turn began. */
 export type Activity = { label: string; started: number }
-export type Usage = { fiveHour?: number; sevenDay?: number; resetsAt?: number; /** Tokens the main conversation currently re-sends every step. */ context?: number }
+export type Usage = {
+  fiveHour?: number; sevenDay?: number; resetsAt?: number
+  /** Tokens the main conversation currently re-sends every step (Claude Code reports this). */
+  context?: number
+  /**
+   * Codex reports only what a whole reply read: every step's input added up, most of it from
+   * cache. Shown as that, not as the size of the conversation.
+   */
+  lastReply?: { input: number; cached: number }
+}
 
 /** Which agent runs a turn, with which model and how much thinking. */
 export type RunSettings = { provider: ProviderId; model: string; effort: Effort }
@@ -560,9 +569,16 @@ export class AiChat {
    * Codex: `codex exec` with JSON events. Shell, file patches (refused by the read-only sandbox in
    * an empty folder), web search, apps, plugins and the user's own config are all off, so it can
    * only act through this app's tools. Verified with codex-cli 0.167.
+   *
+   * Every step re-sends the instructions, so they are kept small: this app's instructions replace
+   * Codex's own (written for a coding agent with a shell), and its skills list, permission,
+   * collaboration and environment notes are left out. Measured: a reply that reads one file went
+   * from 62k to 31k input tokens.
    */
   private codexArgs(settings: RunSettings, mcpUrl: string, resuming: string | null): string[] {
     const toml = (v: string): string => JSON.stringify(v)
+    const instructions = path.join(this.cwd, 'instructions.md')
+    fs.writeFileSync(instructions, systemPrompt('codex'))
     const common = [
       '--json', '--skip-git-repo-check', '--ignore-user-config', '--ignore-rules',
       ...(settings.model ? ['-m', settings.model] : []),
@@ -576,7 +592,12 @@ export class AiChat {
       // This app's tools run without Codex's own approval step: edits already wait for the user's
       // review in the app, and headless Codex has no one to ask, so it would refuse every edit.
       '-c', `mcp_servers.${MCP_SERVER_NAME}.default_tools_approval_mode="approve"`,
-      '-c', `developer_instructions=${toml(systemPrompt('codex'))}`,
+      '-c', `model_instructions_file=${toml(instructions)}`,
+      '-c', 'skills.bundled.enabled=false',
+      '-c', 'include_permissions_instructions=false',
+      '-c', 'include_apps_instructions=false',
+      '-c', 'include_collaboration_mode_instructions=false',
+      '-c', 'include_environment_context=false',
     ]
     // `exec resume` takes neither -s nor -C: the sandbox is set above, the folder is the process's own.
     return resuming ? ['exec', 'resume', ...common, resuming, '-'] : ['exec', ...common, '-']
@@ -608,7 +629,8 @@ export class AiChat {
     // A retry after a lost session continues the same turn, so its clock keeps running.
     this.setActivity(resuming ? 'Opening the conversation…' : codex ? 'Starting Codex…' : 'Starting Claude Code…', mayRetry ? Date.now() : undefined)
     child.stdin!.end(prompt)
-    if (codex) this.usage = { context: this.usage.context }
+    if (codex) this.usage = { lastReply: this.usage.lastReply }
+    else this.usage = { ...this.usage, lastReply: undefined }
 
     let buffer = ''
     let stderr = ''
@@ -684,7 +706,7 @@ export class AiChat {
           gotResult = true
           const u = ev.usage ?? {}
           if (typeof u.input_tokens === 'number') {
-            this.usage = { ...this.usage, context: u.input_tokens }
+            this.usage = { ...this.usage, context: undefined, lastReply: { input: u.input_tokens, cached: typeof u.cached_input_tokens === 'number' ? u.cached_input_tokens : 0 } }
             this.emit({ kind: 'usage', usage: this.usage })
           }
           return

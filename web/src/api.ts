@@ -45,7 +45,7 @@ export type AiSettings = {
 export type AiActivity = { label: string; started: number }
 export type AccessRequest = { id: string; project: string; path: string; reason: string; t: number }
 export type GrantedProject = { name: string; path: string }
-export type AiUsage = { fiveHour?: number; sevenDay?: number; resetsAt?: number; context?: number }
+export type AiUsage = { fiveHour?: number; sevenDay?: number; resetsAt?: number; context?: number; lastReply?: { input: number; cached: number } }
 
 export class ApiError extends Error {
   status: number
