@@ -153,6 +153,8 @@ export async function startServer(opts: { port?: number; strictPort?: boolean } 
       plan: p.plan,
       // Every agent this app can run, found or not, for the choice in Settings.
       providers: detectProviders().map((x) => ({ id: x.id, name: x.name, plan: x.plan, available: x.path !== null, path: x.path, mcpCommand: x.mcpCommand(url) })),
+      // Where any MCP client can reach this app's tools (on this Mac, while the app runs).
+      mcpUrl: url,
       model: run.model,
       effort: run.effort,
       available: p.path !== null,

@@ -4,7 +4,19 @@ A locally hosted, Overleaf-style LaTeX editor. It runs on your Mac, uses your Ma
 
 The full design is in [SPEC.md](SPEC.md).
 
-## Start it
+## Install (without the source code)
+
+Download it from the [latest release](https://github.com/EmilKlitgaard/LaTex-writer/releases/latest). The quickest way is one line in Terminal. It checks the download against the release's checksums, installs both apps (into /Applications, or ~/Applications without admin rights), and needs no "Open Anyway" step:
+
+```bash
+curl -fsSL https://github.com/EmilKlitgaard/LaTex-writer/releases/latest/download/install.sh | bash
+```
+
+Or download the `.dmg`, drag both apps to Applications, and open LaTeX Writer. The apps are not notarized (that needs a paid Apple Developer account), so macOS blocks the first start: open System Settings › Privacy & Security, click **Open Anyway** next to LaTeX Writer, and confirm. This is needed once per app.
+
+You need macOS 12 or later, [Node.js](https://nodejs.org) 24 or newer and [MacTeX](https://tug.org/mactex). The first start downloads what LaTeX Writer needs, which takes a minute or two.
+
+## Start it (from this folder)
 
 Three ways, all running the same server, so projects, settings and chats are shared:
 
@@ -16,13 +28,15 @@ While either app is open it keeps a server running. If the server it uses goes a
 
 Build or rebuild both apps by double-clicking **`Build apps.command`** (or `./scripts/make-app.sh`, optionally with a target folder). Do it again after moving this folder or changing `scripts/app/main.swift`. Changes to the editor itself need no rebuild. The native app needs the Xcode Command Line Tools (`xcode-select --install`); without them only LaTeX Writer Web is built.
 
+These apps run this folder. The apps in a release are built with `--release` instead and carry their own copy of LaTeX Writer (see Releasing below).
+
 The first start installs dependencies and builds the interface, which takes a little while. Later starts are quick.
 
 The address is `http://localhost:4173` (the next free port is used if another program has that one).
 
 The compile status in the top bar (the error count, or the time of a clean compile) shows and hides the Problems list under the PDF. In the Editor layout it switches to Split first and opens the list, since the list lives in the PDF pane.
 
-**Share** in the top bar saves the PDF to Downloads (on a guest's device: downloads it), downloads the project as a .zip, and opens **Share on your network…**. The theme is a three-way switch in Settings: **Auto** follows the Mac's light or dark appearance, or choose **Light** or **Dark**.
+**Share** in the top bar (inside a project) saves the PDF to Downloads (on a guest's device: downloads it), downloads the project as a .zip, opens **Share on your network…**, and **Connect an AI app…** (see the assistant below). The theme is a three-way switch in Settings: **Auto** follows the Mac's light or dark appearance, or choose **Light** or **Dark**.
 
 ## Requirements
 
@@ -102,7 +116,7 @@ A chat in a right-hand sidebar, opened with the **Assistant** button. It can rea
   With no target they work on the selection, else the section at the cursor. All three rest on one guide (`server/skills/humanize-guide.md`) built from StoryScope (Russell et al., COLM 2026). That paper found that AI text gives itself away mostly through structure and meaning, not wording: it over-explains its themes, conveys emotion through the body, tells one tidy linear thread, and stays vague about the outside world. The guide adapts those findings to non-fiction too. The assistant also loads a skill by itself (`use_skill`) when you ask for the same thing in your own words, and MCP clients see the skills as prompts.
 - **Other projects, with your permission.** On its own the assistant only sees the open project. When a task needs another project in the same folder ("set up exercise 2 like exercise 1"), it asks first: a card in the sidebar says which project and why, with **Allow for this project** and **Don't allow**. Access is read-only. The assistant can list, read and search that project and copy files from it with `copy_file`. Copies never overwrite, copied text files wait for review, and images are copied as they are. The permission belongs to the open project (`.latexwriter/access.json`) and shows as a chip under the message box; click its × to take it back.
 - **Attach files and folders.** The **+** in the message box opens a Finder dialog to add files or folders from anywhere on the Mac. The assistant may read them, read-only, in that chat only (each chip has a × to remove it). Helper agents can read what the main assistant may read, but only the main assistant can ask for access.
-- **Also usable from a Claude Code or Codex session.** The tools are an MCP server at `http://localhost:4173/mcp`. Register it once (Settings shows the commands for the agents found on this Mac):
+- **Usable from any AI app that speaks MCP.** The tools are an MCP server at `http://localhost:4173/mcp` (streamable HTTP, no sign-in, only on this Mac, only while LaTeX Writer runs). **Share › Connect an AI app…** shows everything needed to connect one: the one-line commands for the agents found on this Mac, the address, a config for apps that take a URL (Cursor, VS Code, Windsurf, …), one for apps that can only start a local command (through `npx mcp-remote`), and a prompt to paste into any agent that can set itself up. For example:
 
 ```bash
 claude mcp add --transport http latexwriter http://localhost:4173/mcp
@@ -113,6 +127,20 @@ codex mcp add latexwriter --url http://localhost:4173/mcp
 ```
 
 Code: `server/mcp.ts` (the tools), `server/access.ts` (other projects and attachments), `server/skills.ts` and `server/skills/` (the writing skills), `server/review.ts` (pending changes), `server/ai.ts` (runs the agent), `server/providers.ts` (finds Claude Code and Codex, and their models), `server/pdfrender.ts` (PDF to text and images), `web/src/aipanel.ts` (the sidebar).
+
+## Releasing
+
+A release puts the apps on GitHub for people who do not want the source code:
+
+```bash
+scripts/release.sh --dry-run
+```
+
+```bash
+scripts/release.sh
+```
+
+The dry run builds everything and checks it: both apps in the DMG and the zip, valid signatures, and matching checksums. The second command does the same from a clean, pushed `main`, then tags `v<version>` (the version from `package.json`; raise it in `package.json` and `package-lock.json` first) and publishes the release with the DMG, the zip, `install.sh` and `SHA256SUMS.txt`. The release apps carry a copy of LaTeX Writer (the files git tracks, without tests) inside them. On the first start, and after an update, that copy goes to `~/Library/Application Support/LaTeXWriter/app`, where `launch.sh` installs the dependencies and builds the interface, as it does for this folder.
 
 ## Security notes
 

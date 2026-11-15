@@ -13,11 +13,23 @@
 #   ./scripts/make-app.sh              -> ~/Applications
 #   ./scripts/make-app.sh /some/folder -> /some/folder
 #   NO_NATIVE=1 ./scripts/make-app.sh  -> only LaTeX Writer Web
+#   ./scripts/make-app.sh --release /some/folder
+#                                      -> apps for other Macs (see below)
 #
 # The apps remember where this source folder is. Run the script again if you move the folder, or
 # when scripts/app/main.swift changes. Changes to the editor itself need no rebuild.
+#
+# --release builds apps that do not need this folder: each carries a copy of LaTeX Writer (the files
+# git tracks, without tests) in Contents/Resources/app. On first start, and after an update, that copy
+# goes to ~/Library/Application Support/LaTeXWriter/app, where launch.sh installs its dependencies and
+# builds the interface. Those Macs need Node.js 24+, MacTeX, and internet on the first start.
 set -euo pipefail
 
+RELEASE=0
+if [ "${1:-}" = "--release" ]; then
+  RELEASE=1
+  shift
+fi
 SRC="$(cd "$(dirname "$0")/.." && pwd -P)"
 DEST_DIR="${1:-$HOME/Applications}"
 WEB_NAME="LaTeX Writer Web"
@@ -43,6 +55,19 @@ quit_app() {
   for _ in $(seq 1 80); do pgrep -f "$bundle/Contents/MacOS/" >/dev/null 2>&1 || break; sleep 0.1; done
 }
 
+# ---- release payload: the app's own files, carried inside each bundle -----------------------------
+
+PAYLOAD=""
+if [ "$RELEASE" = 1 ]; then
+  PAYLOAD="$TMP/payload"
+  mkdir -p "$PAYLOAD"
+  # Whatever git tracks (and new files it would track), without tests, the app sources and launchers.
+  (cd "$SRC" && git ls-files -co --exclude-standard | grep -v -E '^(test/|scripts/app/|\.claude/|\.gitignore$)|\.command$' | tar -cf - -T -) | tar -C "$PAYLOAD" -xf -
+  PAYLOAD_VERSION="${APP_VERSION:-dev}-$(git -C "$SRC" rev-parse --short HEAD 2>/dev/null || echo local)-$(date +%Y%m%d%H%M%S)"
+  printf '%s\n' "$PAYLOAD_VERSION" > "$PAYLOAD/.version"
+  echo "Release payload $PAYLOAD_VERSION: $(find "$PAYLOAD" -type f | wc -l | tr -d ' ') files"
+fi
+
 # ---- icon (shared): the favicon rendered at the sizes macOS wants ---------------------------------
 
 ICNS=""
@@ -62,7 +87,7 @@ fi
 
 cat > "$TMP/app.applescript" <<'APPLESCRIPT'
 property sourceFolder : "__SOURCE_FOLDER__"
-global serverPid, everRan, recoveries
+global serverPid, everRan, recoveries, srcDir
 
 on appHome()
 	return (POSIX path of (path to home folder)) & "Library/Application Support/LaTeXWriter"
@@ -95,12 +120,21 @@ on serverAnswers()
 	end try
 end serverAnswers
 
+-- A release build carries LaTeX Writer inside the app: copy it to Application Support (when it is
+-- another version than the copy there) and run it from there.
+on installBundled()
+	set inside to (POSIX path of (path to me)) & "Contents/Resources/app"
+	set dest to appHome() & "/app"
+	do shell script "inside=" & quoted form of inside & "; dest=" & quoted form of dest & "; if ! cmp -s \"$inside/.version\" \"$dest/.version\" 2>/dev/null; then mkdir -p \"$(dirname \"$dest\")\" && rm -rf \"$dest.new\" && cp -R \"$inside\" \"$dest.new\" && rm -rf \"$dest\" && mv \"$dest.new\" \"$dest\"; fi"
+	return dest
+end installBundled
+
 -- extra: "" on the first start; " --no-open --reopen" when starting again after the server went away.
 on startServer(extra)
 	set logDir to appHome() & "/logs"
 	do shell script "mkdir -p " & quoted form of logDir
 	-- launch.sh replaces itself with the server process, so this id stays valid until it stops.
-	set serverPid to do shell script "cd " & quoted form of sourceFolder & " && (./scripts/launch.sh" & extra & " > " & quoted form of (logDir & "/launcher.log") & " 2>&1 & echo $!)"
+	set serverPid to do shell script "cd " & quoted form of srcDir & " && (./scripts/launch.sh" & extra & " > " & quoted form of (logDir & "/launcher.log") & " 2>&1 & echo $!)"
 end startServer
 
 on run
@@ -108,6 +142,11 @@ on run
 	set everRan to false
 	set recoveries to 0
 	try
+		if sourceFolder is "__BUNDLED__" then
+			set srcDir to installBundled()
+		else
+			set srcDir to sourceFolder
+		end if
 		startServer("")
 	on error errorMessage
 		display alert "LaTeX Writer could not start" message errorMessage & return & return & "Was the LaTeX Writer folder moved? Run scripts/make-app.sh again from its new place."
@@ -178,7 +217,11 @@ end quit
 APPLESCRIPT
 
 # Put the real path into the script (escaped for an AppleScript string).
-ESCAPED="$(printf '%s' "$SRC" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
+if [ "$RELEASE" = 1 ]; then
+  ESCAPED="__BUNDLED__"
+else
+  ESCAPED="$(printf '%s' "$SRC" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
+fi
 /usr/bin/python3 - "$TMP/app.applescript" "$ESCAPED" <<'PY'
 import sys
 path, src = sys.argv[1], sys.argv[2]
@@ -202,6 +245,7 @@ if [ -n "$ICNS" ]; then
   cp "$ICNS" "$APP/Contents/Resources/applet.icns"
   rm -f "$APP/Contents/Resources/Assets.car"
 fi
+if [ -n "$PAYLOAD" ]; then cp -R "$PAYLOAD" "$APP/Contents/Resources/app"; fi
 # The bundle was edited after osacompile signed it; sign it again (ad hoc, for this Mac only).
 /usr/bin/codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
 touch "$APP"
@@ -221,7 +265,8 @@ STAGE="$TMP/stage/$NATIVE_NAME.app"
 mkdir -p "$STAGE/Contents/MacOS" "$STAGE/Contents/Resources"
 swiftc -O -o "$STAGE/Contents/MacOS/$NATIVE_NAME" "$SRC/scripts/app/main.swift" -framework AppKit -framework WebKit
 if [ -n "$ICNS" ]; then cp "$ICNS" "$STAGE/Contents/Resources/AppIcon.icns"; fi
-VERSION="$(date +%Y.%m.%d)"
+# APP_VERSION (scripts/release.sh sets it from package.json) is the version Finder shows.
+VERSION="${APP_VERSION:-$(date +%Y.%m.%d)}"
 BUILD="$(date +%Y%m%d%H%M)"
 cat > "$STAGE/Contents/Info.plist" <<PLISTEOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -246,7 +291,11 @@ cat > "$STAGE/Contents/Info.plist" <<PLISTEOF
 </plist>
 PLISTEOF
 # The path goes in with plutil, so spaces and special characters need no escaping.
-/usr/bin/plutil -replace LWSourceFolder -string "$SRC" "$STAGE/Contents/Info.plist"
+if [ -n "$PAYLOAD" ]; then
+  cp -R "$PAYLOAD" "$STAGE/Contents/Resources/app"
+else
+  /usr/bin/plutil -replace LWSourceFolder -string "$SRC" "$STAGE/Contents/Info.plist"
+fi
 printf 'APPL????' > "$STAGE/Contents/PkgInfo"
 /usr/bin/codesign --force --sign - "$STAGE" >/dev/null 2>&1 || true
 
