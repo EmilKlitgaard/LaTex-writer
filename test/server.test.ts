@@ -956,7 +956,8 @@ echo '{"type":"turn.completed","usage":{"input_tokens":1234,"cached_input_tokens
   const reply = done.chat.messages[3]
   assert.deepEqual(reply.parts.map((p: any) => (p.kind === 'text' ? p.text : [p.label, p.status])), ['Looking.', ['Read main.tex', 'done'], 'Done from Codex.'])
   assert.equal(reply.error, undefined)
-  assert.equal(done.chat.usage.context, 1234)
+  assert.deepEqual(done.chat.usage.lastReply, { input: 1234, cached: 1000 }, 'Codex reports a whole reply, shown as that')
+  assert.equal(done.chat.usage.context, undefined, 'not as the size of the conversation')
 
   const args = fs.readFileSync(path.join(HOME, 'codex-args.txt'), 'utf8').split('\n')
   assert.equal(args[0], 'exec')
@@ -967,9 +968,13 @@ echo '{"type":"turn.completed","usage":{"input_tokens":1234,"cached_input_tokens
   assert.ok(args.includes('mcp_servers.latexwriter.default_tools_approval_mode="approve"'), 'edits wait for review in the app instead')
   assert.equal(args[args.indexOf('-m') + 1], 'gpt-test')
   assert.ok(args.includes(`mcp_servers.latexwriter.url="http://127.0.0.1:${PORT}/mcp?chat=${done.chat.activeId}"`))
-  const instructions = args.find((a) => a.startsWith('developer_instructions='))!
-  assert.match(JSON.parse(instructions.slice('developer_instructions='.length)), /^You are the writing assistant inside LaTeX Writer/)
+  // This app's instructions replace Codex's own, and the sections it does not need are left out: every step re-sends them.
+  const file = JSON.parse(args.find((a) => a.startsWith('model_instructions_file='))!.slice('model_instructions_file='.length))
+  const instructions = fs.readFileSync(file, 'utf8')
+  assert.match(instructions, /^You are the writing assistant inside LaTeX Writer/)
   assert.doesNotMatch(instructions, /Helper agents/, 'the helpers are Claude Code subagents')
+  assert.ok(!args.some((a) => a.startsWith('developer_instructions=')))
+  for (const c of ['skills.bundled.enabled=false', 'include_permissions_instructions=false', 'include_apps_instructions=false', 'include_collaboration_mode_instructions=false', 'include_environment_context=false']) assert.ok(args.includes(c), c)
   assert.match(fs.readFileSync(path.join(HOME, 'codex-stdin.txt'), 'utf8'), /Earlier in this chat[\s\S]*User: Remember: the deadline is Friday[\s\S]*What is in main\.tex\?$/)
   assert.doesNotMatch(fs.readFileSync(path.join(HOME, 'codex-env.txt'), 'utf8'), /OPENAI_API_KEY|ANTHROPIC_API_KEY/)
 
