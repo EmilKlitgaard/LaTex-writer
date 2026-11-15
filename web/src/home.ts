@@ -1,6 +1,6 @@
 import { api, q, type Sharing } from './api.ts'
 import { app } from './app.ts'
-import { openSettingsDialog, openShareDialog } from './dialogs.ts'
+import { leaveProject, openSettingsDialog, openShareDialog } from './dialogs.ts'
 import { clear, closeOverlays, confirmDialog, h, icon, iconButton, openModal, promptDialog, showMenu, store, timeAgo, toast } from './dom.ts'
 
 type Recent = { path: string; name: string; lastOpened: number; exists: boolean }
@@ -42,7 +42,7 @@ export function mountHome(root: HTMLElement): () => void {
   async function openProject(path: string, workspace: string): Promise<void> {
     try {
       // The 'project' event from the server switches the screen for everyone, including us.
-      await api('POST', '/api/host/project/open', { path, workspace })
+      await leaveProject((force) => api('POST', '/api/host/project/open', { path, workspace, force }))
     } catch (err) {
       fail(err)
     }
@@ -152,7 +152,7 @@ export function mountHome(root: HTMLElement): () => void {
               })
               if (!ok) return
               try {
-                await api('POST', '/api/host/project/trash', { path: p.path })
+                if ((await leaveProject((force) => api('POST', '/api/host/project/trash', { path: p.path, force }))) === null) return
                 toast(`"${p.name}" was moved to the Trash`, 'info')
                 void showWorkspace(ws.path)
               } catch (err) {
@@ -187,7 +187,10 @@ export function mountHome(root: HTMLElement): () => void {
       if (!v) return name.focus()
       create.disabled = true
       try {
-        await api('POST', '/api/host/project/create', { workspace: ws.path, name: v, template })
+        if ((await leaveProject((force) => api('POST', '/api/host/project/create', { workspace: ws.path, name: v, template, force }))) === null) {
+          create.disabled = false
+          return
+        }
         m.close()
       } catch (err) {
         create.disabled = false

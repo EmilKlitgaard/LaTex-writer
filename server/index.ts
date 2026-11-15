@@ -14,14 +14,17 @@ import {
   SESSION_COOKIE, sessionCookie, setPasscode, parseCookies, type User,
 } from './auth.ts'
 import { DEFAULT_PORT, getConfig, loadConfig, touchRecentWorkspace, updateConfig, WEB_BUILD_DIR } from './config.ts'
-import { EFFORTS, findClaudeCli, MODELS, setAiPort, type ChatContext, type Effort, type Model } from './ai.ts'
+import { EFFORTS, setAiPort, type ChatContext, type Effort, type RunSettings } from './ai.ts'
+import { detectProviders, provider, PROVIDERS, resolveModel, type ProviderId } from './providers.ts'
+import { skillMenu } from './skills.ts'
 import { CLOSE_STALE } from './docs.ts'
-import { handleRpc } from './mcp.ts'
+import { handleRpc, newSession } from './mcp.ts'
 import { addEventClient, broadcast, broadcastPresence, closeAllSockets, disconnectUsers, presence, trackSocket } from './hub.ts'
 import { installLogging } from './logging.ts'
 import { extensionOf, HttpError, isHiddenName, resolveInside, sanitizeFolderName } from './paths.ts'
-import { closeProject, currentProject, openProject, requireProject } from './project.ts'
-import { browse, chooseFolderInFinder, createProject, listWorkspace, makeFolder, trashProject } from './workspace.ts'
+import { closeProject, currentProject, openProject, rememberOpen, requireProject } from './project.ts'
+import { revoke } from './access.ts'
+import { browse, chooseFolderInFinder, chooseForAttachment, createProject, listWorkspace, makeFolder, trashProject } from './workspace.ts'
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -94,7 +97,10 @@ export async function startServer(opts: { port?: number; strictPort?: boolean } 
   app.setErrorHandler((err: Error & { status?: number; statusCode?: number }, _req, reply) => {
     const status = err instanceof HttpError ? err.status : (err.statusCode ?? 500)
     if (status >= 500) console.error(err)
-    reply.status(status).send({ error: status >= 500 && !(err instanceof HttpError) ? 'Something went wrong on the server' : err.message })
+    reply.status(status).send({
+      error: status >= 500 && !(err instanceof HttpError) ? 'Something went wrong on the server' : err.message,
+      ...(err instanceof HttpError && err.code ? { code: err.code } : {}),
+    })
   })
 
   // One log line when a device on the network opens the page, so "cannot connect" can be told apart
@@ -129,15 +135,30 @@ export async function startServer(opts: { port?: number; strictPort?: boolean } 
 
   app.get('/api/ping', async () => ({ app: 'latex-writer' }))
 
+  /** The agent, model and effort the next turn runs with. */
+  const runSettings = (): RunSettings => {
+    const cfg = getConfig()
+    const p = provider(cfg.ai.provider)
+    return { provider: p.id, model: resolveModel(p, cfg.ai.model), effort: EFFORTS.includes(cfg.ai.effort as Effort) ? (cfg.ai.effort as Effort) : 'medium' }
+  }
   const aiState = (): Record<string, unknown> => {
     const cfg = getConfig()
+    const run = runSettings()
+    const p = provider(run.provider)
+    const url = `http://localhost:${getConfig().lastPort}/mcp`
     return {
       enabled: cfg.ai.enabled,
-      model: MODELS.includes(cfg.ai.model as Model) ? cfg.ai.model : 'sonnet',
-      effort: EFFORTS.includes(cfg.ai.effort as Effort) ? cfg.ai.effort : 'medium',
-      available: findClaudeCli() !== null,
-      models: MODELS,
+      provider: p.id,
+      providerName: p.name,
+      plan: p.plan,
+      // Every agent this app can run, found or not, for the choice in Settings.
+      providers: detectProviders().map((x) => ({ id: x.id, name: x.name, plan: x.plan, available: x.path !== null, path: x.path, mcpCommand: x.mcpCommand(url) })),
+      model: run.model,
+      effort: run.effort,
+      available: p.path !== null,
+      models: p.models,
       efforts: EFFORTS,
+      skills: skillMenu(),
     }
   }
   const requireAi = (req: FastifyRequest): void => {
@@ -223,8 +244,25 @@ export async function startServer(opts: { port?: number; strictPort?: boolean } 
     return { ok: true }
   })
 
+  /**
+   * Leaving the open project stops an assistant that is working in it (only one project is open
+   * at a time, and its tools act on that one). Unless the request says force, it is refused with a
+   * code the page turns into a question, whichever window or button it came from.
+   */
+  const guardLeave = (req: FastifyRequest, target?: string): void => {
+    const project = currentProject()
+    if (!project?.ai.busy || body(req).force === true) return
+    if (target) {
+      try {
+        if (fs.realpathSync(target) === project.root) return
+      } catch {}
+    }
+    throw new HttpError(409, `The assistant is still working in "${project.settings.name}". Leaving the project stops it.`, 'assistant-busy')
+  }
+
   app.post('/api/host/project/create', async (req) => {
     requireHost(req)
+    guardLeave(req)
     const b = body(req)
     const dir = createProject(b.workspace, b.name, b.template)
     const project = await openProject(dir)
@@ -238,6 +276,7 @@ export async function startServer(opts: { port?: number; strictPort?: boolean } 
     if (typeof b.path !== 'string' || !path.isAbsolute(b.path) || !fs.existsSync(b.path) || !fs.statSync(b.path).isDirectory()) {
       throw new HttpError(404, 'That project folder does not exist any more')
     }
+    guardLeave(req, b.path)
     const project = await openProject(b.path)
     if (typeof b.workspace === 'string') touchRecentWorkspace(b.workspace, project.root)
     return { project: project.info() }
@@ -245,7 +284,9 @@ export async function startServer(opts: { port?: number; strictPort?: boolean } 
 
   app.post('/api/host/project/close', async (req) => {
     requireHost(req)
+    guardLeave(req)
     await closeProject()
+    rememberOpen(null)
     return { ok: true }
   })
 
@@ -253,7 +294,11 @@ export async function startServer(opts: { port?: number; strictPort?: boolean } 
     requireHost(req)
     const target = String(body(req).path ?? '')
     const current = currentProject()
-    if (current && fs.existsSync(target) && current.root === fs.realpathSync(target)) await closeProject()
+    if (current && fs.existsSync(target) && current.root === fs.realpathSync(target)) {
+      if (current.ai.busy && body(req).force !== true) throw new HttpError(409, `The assistant is still working in "${current.settings.name}". Moving it to the Trash stops it.`, 'assistant-busy')
+      await closeProject()
+      rememberOpen(null)
+    }
     await trashProject(target)
     return { ok: true }
   })
@@ -271,7 +316,19 @@ export async function startServer(opts: { port?: number; strictPort?: boolean } 
       if (!b.aiEnabled) currentProject()?.ai.stop()
       broadcast('ai', { kind: 'settings', ai: aiState() }, 'host')
     }
-    if (typeof b.aiModel === 'string' && MODELS.includes(b.aiModel as Model)) {
+    if (typeof b.aiProvider === 'string' && PROVIDERS.includes(b.aiProvider as ProviderId) && b.aiProvider !== getConfig().ai.provider) {
+      if (currentProject()?.ai.busy) throw new HttpError(409, 'Stop the assistant before switching to another one')
+      const next = provider(b.aiProvider)
+      if (!next.path) throw new HttpError(404, `${next.name} was not found on this Mac`)
+      updateConfig((c) => {
+        // Each agent keeps its own model choice.
+        c.ai.models[c.ai.provider] = c.ai.model
+        c.ai.provider = next.id
+        c.ai.model = resolveModel(next, c.ai.models[next.id])
+      })
+      broadcast('ai', { kind: 'settings', ai: aiState() }, 'host')
+    }
+    if (typeof b.aiModel === 'string' && provider(getConfig().ai.provider).models.some((m) => m.id === b.aiModel)) {
       updateConfig((c) => void (c.ai.model = b.aiModel as string))
       broadcast('ai', { kind: 'settings', ai: aiState() }, 'host')
     }
@@ -296,7 +353,7 @@ export async function startServer(opts: { port?: number; strictPort?: boolean } 
     const project = currentProject()
     const ai = aiState()
     // Opening the assistant picks up a turn that was cut off when the app was closed.
-    if (project && getConfig().ai.enabled) project.ai.resumeInterrupted(ai.model as Model, ai.effort as Effort)
+    if (project && getConfig().ai.enabled) project.ai.resumeInterrupted(runSettings())
     return { ai: aiState(), chat: project && getConfig().ai.enabled ? project.ai.state() : null, review: project ? project.review.summary() : null }
   })
 
@@ -311,9 +368,17 @@ export async function startServer(opts: { port?: number; strictPort?: boolean } 
       selectionStart: Number.isFinite(Number(c.selectionStart)) ? Number(c.selectionStart) : undefined,
       selectionEnd: Number.isFinite(Number(c.selectionEnd)) ? Number(c.selectionEnd) : undefined,
     }
-    const ai = aiState()
-    requireProject().ai.send(b.text, context, ai.model as Model, ai.effort as Effort)
+    requireProject().ai.send(b.text, context, runSettings())
     return { ok: true }
+  })
+
+  // Looks for the agents installed on this Mac again (after installing one, for example).
+  app.post('/api/host/ai/detect', async (req) => {
+    requireHost(req)
+    detectProviders(true)
+    const ai = aiState()
+    broadcast('ai', { kind: 'settings', ai }, 'host')
+    return { ai }
   })
 
   app.post('/api/host/ai/stop', async (req) => {
@@ -337,6 +402,37 @@ export async function startServer(opts: { port?: number; strictPort?: boolean } 
   app.post('/api/host/ai/delete', async (req) => {
     requireAi(req)
     requireProject().ai.remove(body(req).id)
+    return { ok: true }
+  })
+
+  // Files and folders the assistant may read in the chat in use, chosen in a Finder dialog.
+  app.post('/api/host/ai/attach', async (req) => {
+    requireAi(req)
+    const b = body(req)
+    const project = requireProject()
+    const paths = Array.isArray(b.paths) ? b.paths : await chooseForAttachment(b.kind, path.dirname(project.root))
+    return { attachments: paths.length ? project.ai.attach(paths) : project.ai.state().attachments }
+  })
+
+  app.post('/api/host/ai/detach', async (req) => {
+    requireAi(req)
+    requireProject().ai.detach(body(req).path)
+    return { ok: true }
+  })
+
+  // The user's answer to the assistant asking to read another project.
+  app.post('/api/host/ai/access/answer', async (req) => {
+    requireAi(req)
+    const b = body(req)
+    if (!requireProject().ai.access.answer(b.id, b.allow === true)) throw new HttpError(404, 'That question was already answered or has expired')
+    return { ok: true }
+  })
+
+  app.post('/api/host/ai/access/revoke', async (req) => {
+    requireAi(req)
+    const project = requireProject()
+    revoke(project.root, body(req).path)
+    project.ai.emitAccess()
     return { ok: true }
   })
 
@@ -374,8 +470,16 @@ export async function startServer(opts: { port?: number; strictPort?: boolean } 
     const payload = req.body
     const messages = Array.isArray(payload) ? payload : [payload]
     const replies: Record<string, unknown>[] = []
+    const chat = typeof query(req).chat === 'string' ? query(req).chat : undefined
+    // A new MCP session gets an id; the client sends it back with every call, so its calls can be
+    // kept to the project it started on.
+    let session = typeof req.headers['mcp-session-id'] === 'string' ? req.headers['mcp-session-id'] : undefined
+    if (messages.some((m) => (m as Record<string, unknown> | null)?.method === 'initialize')) {
+      session = newSession()
+      reply.header('Mcp-Session-Id', session)
+    }
     for (const msg of messages) {
-      const out = await handleRpc((msg ?? {}) as Record<string, unknown>, currentProject)
+      const out = await handleRpc((msg ?? {}) as Record<string, unknown>, currentProject, { chat, session })
       if (out) replies.push(out)
     }
     if (!replies.length) return reply.status(202).send()
@@ -753,12 +857,34 @@ async function main(): Promise<void> {
   installLogging()
   const noOpen = process.argv.includes('--no-open') || process.env.LATEXWRITER_NO_OPEN === '1'
   const cfgPort = DEFAULT_PORT
-  if (!(await portFree(cfgPort)) && (await isOurServer(cfgPort))) {
+  const alreadyRunning = (): void => {
     console.log(`LaTeX Writer is already running on http://localhost:${cfgPort}`)
     if (!noOpen) execFile('/usr/bin/open', [`http://localhost:${cfgPort}`])
-    return
+    // Nothing should keep this process alive, but make sure of it.
+    setTimeout(() => process.exit(0), 1000).unref()
   }
-  const server = await startServer()
+  if (!(await portFree(cfgPort)) && (await isOurServer(cfgPort))) return alreadyRunning()
+  // Claim the usual port first. When two apps start a server at the same moment (both saw the
+  // old one go), one gets it and the other finds it here instead of moving to the next port.
+  let server: ServerHandle
+  try {
+    server = await startServer({ port: cfgPort, strictPort: true })
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw err
+    for (let i = 0; i < 20 && !(await isOurServer(cfgPort)); i++) await new Promise((r) => setTimeout(r, 100))
+    if (await isOurServer(cfgPort)) return alreadyRunning()
+    server = await startServer()
+  }
+  // Started again by an app after the server it used went away: open the project that was open.
+  const reopen = getConfig().openProject
+  if (process.argv.includes('--reopen') && reopen && fs.existsSync(reopen)) {
+    try {
+      await openProject(reopen)
+      console.log(`Reopened ${reopen}`)
+    } catch (err) {
+      console.error(`Could not reopen ${reopen}: ${(err as Error).message}`)
+    }
+  }
   const url = `http://localhost:${server.port}`
   console.log(`\nLaTeX Writer is running on ${url}`)
   console.log('Keep this window open while you work. Press Ctrl+C or close the window to stop.\n')
@@ -774,6 +900,13 @@ async function main(): Promise<void> {
     server.close().catch((err) => console.error(err)).finally(() => process.exit(0))
   }
   for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) process.on(sig, () => stop(sig))
+  // Started by the Mac app with a pipe on stdin: when the app goes away (even force-quit or a
+  // crash) the pipe closes, and the server stops instead of running on unseen.
+  if (process.argv.includes('--exit-with-parent')) {
+    process.stdin.on('end', () => stop('the app quit'))
+    process.stdin.on('close', () => stop('the app quit'))
+    process.stdin.resume()
+  }
   process.on('uncaughtException', (err) => {
     console.error('Unexpected error:', err)
     try {

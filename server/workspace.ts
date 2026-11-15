@@ -126,6 +126,43 @@ export function chooseFolderInFinder(startInput?: unknown): Promise<string | nul
   })
 }
 
+/**
+ * Shows the macOS "choose file" or "choose folder" dialog with several selections allowed, for
+ * attaching files to an assistant conversation. Returns the chosen paths; empty if cancelled.
+ */
+export function chooseForAttachment(kindInput: unknown, startInput?: unknown): Promise<string[]> {
+  if (finderDialogOpen) throw new HttpError(409, 'The Finder dialog is already open. Look for it behind this window.')
+  const kind = kindInput === 'folder' ? 'folder' : 'file'
+  const start = typeof startInput === 'string' && path.isAbsolute(startInput) ? nearestExistingDir(startInput) : os.homedir()
+  const prompt = kind === 'folder' ? 'Choose folders the assistant may read in this conversation' : 'Choose files the assistant may read in this conversation'
+  finderDialogOpen = true
+  return new Promise((resolve, reject) => {
+    execFile(
+      '/usr/bin/osascript',
+      [
+        '-e', 'on run argv',
+        '-e', 'activate',
+        '-e', `set chosen to choose ${kind} with prompt "${prompt}" default location (POSIX file (item 1 of argv)) with multiple selections allowed`,
+        '-e', 'set out to ""',
+        '-e', 'repeat with f in chosen',
+        '-e', 'set out to out & POSIX path of f & linefeed',
+        '-e', 'end repeat',
+        '-e', 'return out',
+        '-e', 'end run',
+        start,
+      ],
+      { timeout: 15 * 60 * 1000 },
+      (err, stdout, stderr) => {
+        finderDialogOpen = false
+        if (!err) return resolve(stdout.split('\n').map((p) => p.trim()).filter(Boolean).map((p) => (p.length > 1 ? p.replace(/\/$/, '') : p)))
+        if (/-128|User canceled/i.test(`${stderr} ${err.message}`)) return resolve([])
+        console.error('Finder dialog failed:', stderr || err.message)
+        reject(new HttpError(500, 'The Finder dialog could not be opened.'))
+      },
+    )
+  })
+}
+
 export function makeFolder(parentInput: unknown, nameInput: unknown): string {
   const parent = requireDir(parentInput)
   const name = validateEntryName(String(nameInput ?? ''))

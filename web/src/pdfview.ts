@@ -56,6 +56,7 @@ export class PdfView {
   private currentPage = 1
   private loadToken = 0
   private visibleTick = 0
+  private scrollAnimation = 0
 
   constructor(opts: PdfViewOptions = {}, emptyText = 'No PDF yet') {
     this.opts = opts
@@ -77,6 +78,8 @@ export class PdfView {
     }, 80))
     this.resizeObserver.observe(this.element)
     this.element.addEventListener('scroll', () => this.updateCurrentPage(), { passive: true })
+    // The reader taking over ends an animated scroll.
+    for (const type of ['wheel', 'touchstart', 'pointerdown', 'keydown']) this.element.addEventListener(type, () => this.stopScrolling(), { passive: true })
     this.pagesEl.addEventListener('dblclick', (e) => {
       if ((e.target as HTMLElement).closest('.pdf-link')) return
       const wrapper = (e.target as HTMLElement).closest<HTMLElement>('.pdf-page')
@@ -277,7 +280,38 @@ export class PdfView {
 
   gotoPage(page: number): void {
     const slot = this.slots[Math.max(0, Math.min(this.slots.length - 1, page - 1))]
+    this.stopScrolling()
     if (slot) this.element.scrollTop = slot.wrapper.offsetTop - PAGE_GAP
+  }
+
+  private stopScrolling(): void {
+    cancelAnimationFrame(this.scrollAnimation)
+    this.scrollAnimation = 0
+  }
+
+  /**
+   * Glides to a position. The browser's own smooth scrolling is cancelled whenever the page sets
+   * scrollTop, which happens each time a page that scrolls past is drawn for the first time and
+   * changes size, so a long jump used to stop halfway. This re-aims at the target every frame
+   * (and for a moment after arriving), so pages loading on the way cannot throw it off.
+   */
+  private scrollSmoothly(target: () => number): void {
+    this.stopScrolling()
+    const el = this.element
+    const clamp = (y: number): number => Math.max(0, Math.min(y, el.scrollHeight - el.clientHeight))
+    const from = el.scrollTop
+    const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    const duration = reduced ? 0 : Math.min(600, 180 + Math.abs(clamp(target()) - from) / 5)
+    const settle = 300
+    const start = performance.now()
+    const step = (now: number): void => {
+      const elapsed = now - start
+      const t = duration ? Math.min(1, elapsed / duration) : 1
+      const goal = clamp(target())
+      el.scrollTop = t < 1 ? from + (goal - from) * (1 - (1 - t) ** 3) : goal
+      this.scrollAnimation = elapsed < duration + settle ? requestAnimationFrame(step) : 0
+    }
+    this.scrollAnimation = requestAnimationFrame(step)
   }
 
   /** Scrolls to a spot (PDF points from the top-left of the page) and flashes a marker there. */
@@ -295,7 +329,7 @@ export class PdfView {
       },
     })
     slot.wrapper.appendChild(marker)
-    this.element.scrollTo({ top: slot.wrapper.offsetTop + top - this.element.clientHeight / 3, behavior: 'smooth' })
+    this.scrollSmoothly(() => slot.wrapper.offsetTop + top - this.element.clientHeight / 3)
     setTimeout(() => marker.remove(), 2200)
   }
 
@@ -357,18 +391,15 @@ export class PdfView {
     }
     const slot = index === null ? undefined : this.slots[index]
     if (!slot || this.pdf !== pdf) return
-    // Render the target page first so its size and position are stable before we scroll to it.
-    // This avoids a race where the page renders after scrollTo() and shifts the layout.
-    await this.render(slot)
-    if (this.pdf !== pdf) return
     // Destinations give the top of the target in PDF units, measured from the bottom of the page.
-    const pageHeight = this.sizeOf(slot).height
     let top: number | null = null
     if (mode?.name === 'XYZ') top = args[1] ?? null
     else if (mode?.name === 'FitH' || mode?.name === 'FitBH') top = args[0] ?? null
     else if (mode?.name === 'FitR') top = args[3] ?? null
-    const y = top === null ? 0 : Math.max(0, pageHeight - top) * this.scale
-    this.element.scrollTo({ top: slot.wrapper.offsetTop + y - 16, behavior: 'smooth' })
+    // Measured again on every frame: the page may turn out to have another size once it is drawn.
+    const offset = (): number => (top === null ? 0 : Math.max(0, this.sizeOf(slot).height - top) * this.scale)
+    const y = offset()
+    this.scrollSmoothly(() => slot.wrapper.offsetTop + offset() - 16)
     const marker = h('div', { class: 'pdf-target', style: { top: `${Math.max(0, y - 4)}px` } })
     slot.wrapper.appendChild(marker)
     setTimeout(() => marker.remove(), 1600)
@@ -393,12 +424,15 @@ export class PdfView {
       if (slot.pendingKey !== key || this.pdf !== pdf) return
       const viewport = page.getViewport({ scale })
       const natural = page.getViewport({ scale: 1 })
-      if (!slot.size || slot.size.width !== natural.width || slot.size.height !== natural.height) {
+      // Only a page whose size differs from what the layout assumed moves things; touching the scroll
+      // position otherwise would cut short a scroll in progress.
+      const assumed = this.sizeOf(slot)
+      slot.size = { width: natural.width, height: natural.height }
+      if (assumed.width !== natural.width || assumed.height !== natural.height) {
         const anchor = this.anchor()
-        slot.size = { width: natural.width, height: natural.height }
         slot.wrapper.style.width = `${Math.floor(viewport.width)}px`
         slot.wrapper.style.height = `${Math.floor(viewport.height)}px`
-        this.restore(anchor)
+        if (!this.scrollAnimation) this.restore(anchor)
       }
       let ratio = window.devicePixelRatio || 1
       const pixels = viewport.width * viewport.height * ratio * ratio

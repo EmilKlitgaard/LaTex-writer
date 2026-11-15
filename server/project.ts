@@ -9,7 +9,7 @@ import chokidar, { type FSWatcher } from 'chokidar'
 import { AiChat } from './ai.ts'
 import { PROJECT_NOTES_FILE } from './notes.ts'
 import { Compiler, type BuildResult } from './compile.ts'
-import { writeFileAtomic } from './config.ts'
+import { getConfig, updateConfig, writeFileAtomic } from './config.ts'
 import { DocManager } from './docs.ts'
 import { History, SNAPSHOT_INTERVAL_MS } from './history.ts'
 import { broadcast } from './hub.ts'
@@ -598,6 +598,7 @@ export function currentProject(): Project | null {
 async function projectGone(project: Project): Promise<void> {
   if (current !== project) return
   current = null
+  rememberOpen(null)
   const name = project.settings.name
   await project.close().catch((err) => console.error(err))
   broadcast('project', { project: null })
@@ -616,11 +617,18 @@ export function requireProject(): Project {
   return current
 }
 
+/** Remembers which project is open, so a server started again after a crash can reopen it. */
+export function rememberOpen(root: string | null): void {
+  if (getConfig().openProject === root) return
+  updateConfig((c) => void (c.openProject = root))
+}
+
 export async function openProject(root: string): Promise<Project> {
   const real = fs.realpathSync(root)
   if (current?.root === real) return current
   await closeProject(false)
   current = new Project(real, (p) => void projectGone(p))
+  rememberOpen(real)
   broadcast('project', { project: current.info() })
   current.scheduleAutoCompile(200)
   return current

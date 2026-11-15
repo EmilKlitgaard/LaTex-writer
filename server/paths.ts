@@ -5,9 +5,12 @@ export const INTERNAL_DIR = '.latexwriter'
 
 export class HttpError extends Error {
   status: number
-  constructor(status: number, message: string) {
+  /** A machine-readable reason, when the page should react to this error in a particular way. */
+  code?: string
+  constructor(status: number, message: string, code?: string) {
     super(message)
     this.status = status
+    this.code = code
   }
 }
 
