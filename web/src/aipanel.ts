@@ -84,9 +84,20 @@ export class AiPanel {
   constructor(hooks: AiPanelHooks) {
     this.hooks = hooks
     this.listEl = h('div', { class: 'ai-messages', 'aria-live': 'polite' })
+    // Following the bottom stops only when the user scrolls up, and starts again near the bottom.
+    // (The chat's own scrolling while it draws messages fires scroll events late, when more content
+    // has been added; those must not count as leaving the bottom.)
+    let lastTop = 0
     this.listEl.addEventListener('scroll', () => {
-      this.stickToBottom = this.listEl.scrollHeight - this.listEl.scrollTop - this.listEl.clientHeight < 40
+      const top = this.listEl.scrollTop
+      const nearBottom = this.listEl.scrollHeight - top - this.listEl.clientHeight < 40
+      if (nearBottom) this.stickToBottom = true
+      else if (top < lastTop - 1) this.stickToBottom = false
+      lastTop = top
     })
+    // The area below the chat changes height after it is drawn (the file and source chips, a
+    // placeholder that wraps, the usage line): stay at the bottom when the chat was there.
+    new ResizeObserver(() => this.keepBottom()).observe(this.listEl)
     this.historyEl = h('div', { class: 'ai-history', hidden: true, role: 'menu' })
     this.reviewEl = h('div', { class: 'ai-review', hidden: true })
     this.contextEl = h('div', { class: 'ai-context' })
@@ -366,6 +377,7 @@ export class AiPanel {
         h('button', { class: 'ai-source-remove', type: 'button', title: removeLabel, 'aria-label': `${removeLabel}: ${label}`, onclick: onRemove }, icon('close', 11)))
     for (const p of granted) this.sourcesEl.append(chip('share', p.name, `The assistant may read the project "${p.name}" (read-only). This lasts until you remove it.`, 'Remove access', () => void this.revoke(p), 'granted'))
     for (const a of attachments) this.sourcesEl.append(chip(/\.[a-z0-9]{1,6}$/i.test(a) ? 'file' : 'folder', baseName(a), `${a}\nThe assistant may read this in this chat (read-only).`, 'Remove from this chat', () => void this.detach(a)))
+    this.keepBottom()
   }
 
   private setRequests(requests: AccessRequest[]): void {
@@ -515,6 +527,16 @@ export class AiPanel {
   private autosize(): void {
     this.input.style.height = 'auto'
     this.input.style.height = `${Math.min(160, this.input.scrollHeight + 2)}px`
+    this.keepBottom()
+  }
+
+  /**
+   * The area under the chat changes height (chips, the usage line, the input growing): when the
+   * chat was at the bottom, keep it there, so the last message is neither cut off nor followed by
+   * a gap. Called right after each such change; a ResizeObserver catches the rest.
+   */
+  private keepBottom(): void {
+    if (this.stickToBottom) this.listEl.scrollTop = this.listEl.scrollHeight
   }
 
   /** The line under a reply in progress: a spinner, what is happening, and how long the turn has run. */
@@ -554,15 +576,17 @@ export class AiPanel {
     this.sendBtn.title = this.busy ? 'Stop' : 'Send (Enter)'
     this.sendBtn.setAttribute('aria-label', this.sendBtn.title)
     this.sendBtn.classList.toggle('btn-primary', !this.busy)
+    this.keepBottom()
   }
 
   updateContext(): void {
     const c = this.hooks.context()
     clear(this.contextEl)
-    if (!c.file) return
+    if (!c.file) return this.keepBottom()
     const lines = c.selection ? (c.selectionEnd ?? 0) - (c.selectionStart ?? 0) + 1 : 0
     this.contextEl.append(icon('file', 13), h('span', { class: 'ai-context-name' }, c.file), h('span', { class: 'ai-context-where' }, lines ? `${lines} line${lines === 1 ? '' : 's'} selected` : c.line ? `line ${c.line}` : ''))
     this.contextEl.title = 'The assistant is told which file you have open and what you have selected'
+    this.keepBottom()
   }
 
   private renderUsage(): void {
@@ -577,12 +601,15 @@ export class AiPanel {
     const u = this.usage.fiveHour
     const pct = typeof u === 'number' ? Math.round(u * 100) : null
     if (pct !== null) bits.push(`${pct}% of your 5-hour limit`)
-    this.usageEl.append(bits.join(' · '))
+    if (bits.length) this.usageEl.append(bits.join(' · '))
     if (long) {
       this.usageEl.append(h('br'), 'Long conversation: every step re-reads it. ',
         h('button', { class: 'link', type: 'button', onclick: () => void this.reset() }, 'Start a new chat'), ' when the task changes.')
     }
     this.usageEl.classList.toggle('warn', long || (pct ?? 0) >= 80)
+    // Nothing to say (Codex before its first reply, a new chat): take no room under the message box.
+    this.usageEl.hidden = !this.usageEl.childNodes.length
+    this.keepBottom()
   }
 
   focus(): void {
@@ -618,6 +645,8 @@ export class AiPanel {
       return
     }
     for (const m of this.messages) this.renderMessage(m.id)
+    // Fonts and typeset math settle a frame later: end at the bottom once they have.
+    requestAnimationFrame(() => this.keepBottom())
   }
 
   private queueRender(id: string): void {
