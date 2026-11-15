@@ -1,6 +1,6 @@
 import katex from 'katex'
 import 'katex/dist/katex.min.css'
-import { h } from './dom.ts'
+import { copyButton, h } from './dom.ts'
 
 // A small, safe Markdown renderer for chat replies. It builds DOM nodes directly and never
 // parses HTML, so nothing the model writes can inject markup into the page. Math ($...$, $$...$$,
@@ -156,7 +156,9 @@ export function renderMarkdown(source: string, links?: FileLinks): DocumentFragm
       const code: string[] = []
       i++
       while (i < lines.length && !/^\s*```/.test(lines[i])) code.push(lines[i++])
-      out.append(h('pre', { class: 'md-code' }, h('code', null, code.join('\n'))))
+      const source = code.join('\n')
+      // The copy button sits in the block's top-right corner, as an icon: the chat is narrow.
+      out.append(h('div', { class: 'copy-box block md-code-box' }, h('pre', { class: 'md-code' }, h('code', null, source)), copyButton(() => source, { label: '', what: 'the code' })))
       continue
     }
     const block = blockMath(lines, i)

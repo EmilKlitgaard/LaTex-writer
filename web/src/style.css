@@ -366,7 +366,7 @@ kbd { font-size: 11.5px; padding: 1px 5px; border: 1px solid var(--border-strong
 .ai-history-open { flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; gap: 8px; padding: 6px 8px; border: 0; background: none; text-align: left; font-size: 12.5px; }
 .ai-history-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ai-history-date { flex: none; font-size: 11px; color: var(--fg-muted); }
-.ai-messages { flex: 1 1 auto; min-height: 60px; overflow: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.ai-messages { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
 .ai-empty { margin: auto 0; display: flex; flex-direction: column; gap: 12px; padding: 8px 4px; }
 .ai-suggestions { display: flex; flex-direction: column; gap: 6px; }
 .ai-suggestion { text-align: left; border: 1px solid var(--border-strong); background: var(--surface); border-radius: var(--radius); padding: 7px 10px; font-size: 12.5px; }
@@ -407,17 +407,27 @@ kbd { font-size: 11.5px; padding: 1px 5px; border: 1px solid var(--border-strong
 .md a.md-file code { color: inherit; }
 .md a.md-file:hover { text-decoration-style: solid; }
 
-.ai-review { flex: none; max-height: 50%; display: flex; flex-direction: column; border-top: 1px solid var(--border-strong); background: var(--surface); box-shadow: 0 -3px 10px rgb(0 0 0 / 0.07); }
-.ai-review-head { display: flex; align-items: center; gap: 6px; padding: 5px 8px 5px 4px; flex: none; }
+.ai-review { flex: none; min-height: 0; overflow: hidden; display: flex; flex-direction: column; border-top: 1px solid var(--border-strong); background: var(--surface); box-shadow: 0 -3px 10px rgb(0 0 0 / 0.07); }
+/* Open, the tray takes the whole chat area; the chat itself folds away above it. */
+.ai-messages { transition: padding-top 0.28s cubic-bezier(0.2, 0.8, 0.2, 1), padding-bottom 0.28s cubic-bezier(0.2, 0.8, 0.2, 1); }
+.ai-pane.review-flat .ai-messages { padding-top: 0; padding-bottom: 0; overflow: hidden; }
+.ai-pane.review-open .ai-messages { flex: 0 0 0; }
+@media (prefers-reduced-motion: reduce) { .ai-messages { transition: none; } }
+.ai-pane.review-open .ai-review { flex: 1 1 auto; }
+.ai-review-head { display: flex; flex-direction: column; gap: 3px; padding: 3px 8px 6px; flex: none; }
 .ai-review.open .ai-review-head { border-bottom: 1px solid var(--border); }
-.ai-review-toggle { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 5px 8px; border: 0; border-radius: 6px; background: none; font-size: 12.5px; text-align: left; }
+.ai-review-toggle { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; padding: 3px 4px; border: 0; border-radius: 6px; background: none; font-size: 12.5px; text-align: left; }
+.ai-review-title { flex: 1; min-width: 0; display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 8px; }
+.ai-review-count { color: var(--fg-muted); font-size: 12px; }
+.ai-review-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.ai-review-actions .btn { justify-content: center; width: 100%; }
 .ai-review-toggle:hover { background: var(--accent-soft); }
 .ai-review-toggle .icon { flex: none; color: var(--fg-muted); transition: transform 0.12s; }
 .ai-review.open .ai-review-toggle .icon { transform: rotate(90deg); }
-.ai-review-lines { display: inline-flex; gap: 6px; padding: 1px 7px; border-radius: 999px; background: var(--bg); border: 1px solid var(--border); font-family: var(--mono); font-size: 11px; font-weight: 600; }
+.ai-review-lines { flex: none; display: inline-flex; gap: 8px; padding: 1px 8px; border-radius: 999px; background: var(--bg); border: 1px solid var(--border); font-family: var(--mono); font-size: 11px; font-weight: 600; }
 .ai-lines-added { color: var(--ok); }
 .ai-lines-removed { color: var(--danger); }
-.ai-review-list { overflow: auto; padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 8px; }
+.ai-review-list { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 8px; }
 .hunk { border: 1px solid var(--border-strong); border-radius: 8px; background: var(--bg); overflow: hidden; flex: none; }
 .hunk-head { display: flex; align-items: center; gap: 2px; padding: 3px 4px 3px 4px; border-bottom: 1px solid var(--border); background: var(--surface); }
 .hunk-where { flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; gap: 6px; padding: 3px 5px; border: 0; border-radius: 5px; background: none; font-size: 12px; text-align: left; }
@@ -442,7 +452,7 @@ kbd { font-size: 11.5px; padding: 1px 5px; border: 1px solid var(--border-strong
 .ai-slash-name { font-family: var(--mono); font-weight: 600; }
 .ai-slash-hint { font-family: var(--sans); font-weight: 400; color: var(--fg-faint); margin-left: 6px; }
 .ai-slash-desc { color: var(--fg-muted); font-size: 11.5px; line-height: 1.35; }
-.ai-skill-hint { font-size: 12px; line-height: 1.9; }
+.ai-skill-hint { font-size: 12px; line-height: 1.4; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .ai-skill-chip { font-family: var(--mono); font-size: 11.5px; padding: 1px 6px; border-radius: 6px; border: 1px solid var(--border-strong); background: var(--surface); color: var(--fg); }
 button.ai-skill-chip:hover { border-color: var(--accent); background: var(--accent-soft); }
 .ai-skill-chip.static { border-color: transparent; background: var(--bg); margin-right: 2px; }
@@ -515,10 +525,35 @@ button.ai-skill-chip:hover { border-color: var(--accent); background: var(--acce
 
 /* ---- dialogs ----------------------------------------------------------------------- */
 
-.notice.warn { padding: 8px 10px; border-radius: var(--radius); background: var(--danger-soft); color: var(--danger); }
 .connect-label { color: var(--fg-muted); margin: 8px 0 3px; }
-.connect-row { align-items: flex-start; }
-.connect-block { margin: 0; white-space: pre-wrap; font-size: 12px; line-height: 1.45; max-height: 180px; overflow: auto; }
+.mcp-status { display: flex; align-items: center; gap: 10px; padding: 8px 10px; margin: 4px 0 14px; border-radius: var(--radius); border: 1px solid var(--accent); background: var(--accent-soft); font-size: 13px; overflow-wrap: anywhere; }
+.mcp-status.off { border-color: var(--danger); background: var(--danger-soft); }
+.mcp-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+.mcp-status.off .mcp-dot { background: var(--danger); }
+.connect-snippets.off { opacity: 0.5; }
+/* Text to copy, with its copy button inside: at the right end of a line, or top right in a block. */
+.copy-box { position: relative; min-width: 0; }
+.copy-box .copy-text { display: block; margin: 0; font-family: var(--mono); font-size: 12.5px; line-height: 1.45; color: var(--fg); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.copy-box.line { display: flex; align-items: center; gap: 6px; padding: 4px 4px 4px 10px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+.copy-box.line .copy-text { flex: 1; min-width: 0; padding: 3px 0; border: 0; background: none; }
+.copy-box.line.large .copy-text { font-size: 14px; }
+.copy-box.block .copy-text { padding: 9px 84px 9px 11px; max-height: 220px; overflow: auto; }
+.copy-box.block > .copy-btn { position: absolute; top: 6px; right: 6px; }
+.copy-btn { display: inline-flex; align-items: center; justify-content: center; gap: 4px; flex: none; height: 24px; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface-raised); color: var(--fg-muted); font-size: 12px; font-weight: 500; transition: color 0.15s, background 0.15s, border-color 0.15s; }
+.copy-btn:hover { color: var(--fg); border-color: var(--fg-faint); }
+.copy-btn.icon-only { width: 26px; padding: 0; }
+.copy-btn.copied, .copy-btn.copied:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.copy-btn.copied .icon { animation: copied-pop 0.25s ease-out; }
+@keyframes copied-pop { from { transform: scale(0.6); } to { transform: scale(1); } }
+.copy-box + .copy-box { margin-top: 6px; }
+/* The chat's code blocks keep their look; the icon-only button needs less room. */
+.md-code-box { margin: 0 0 7px; }
+.md-code-box .md-code { margin: 0; padding-right: 40px; }
+.md-code-box > .copy-btn { opacity: 0.75; }
+.md-code-box:hover > .copy-btn, .md-code-box > .copy-btn:focus-visible, .md-code-box > .copy-btn.copied { opacity: 1; }
+/* The full LaTeX log: the button stays in the corner while the log scrolls. */
+.log-box .raw-log { padding-right: 90px; }
+.log-command { margin-top: 6px; }
 .url { font-size: 14px; padding: 7px 10px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); user-select: all; overflow-wrap: anywhere; }
 .people { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 7px; }
 .shortcuts { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 0; align-items: center; }

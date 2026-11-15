@@ -1,6 +1,6 @@
 import { api, ApiError, q, type AiSettings, type Person, type Sharing, type Snapshot, type TreeNode } from './api.ts'
 import { app, applyFontSize, applyTheme, fontSize, themeMode, type ThemeMode } from './app.ts'
-import { clear, confirmDialog, copyText, h, icon, iconButton, openModal, timeAgo, toast } from './dom.ts'
+import { clear, confirmDialog, copyBox, copyButton, h, icon, iconButton, openModal, timeAgo, toast } from './dom.ts'
 
 // ---- sharing (host) ------------------------------------------------------------------
 
@@ -62,9 +62,7 @@ export function openShareDialog(): void {
 
     if (s.enabled) {
       const urls = s.urls.length
-        ? s.urls.map((url) => h('div', { class: 'row url-row' },
-            h('code', { class: 'grow url' }, url),
-            h('button', { class: 'btn btn-small', type: 'button', onclick: async () => toast((await copyText(url)) ? 'Address copied' : 'Could not copy. Select the address and copy it.', 'info') }, icon('copy'), ' Copy')))
+        ? s.urls.map((url) => copyBox(url, { what: 'the address', class: 'large' }))
         : [h('p', { class: 'muted' }, 'This Mac is not connected to a network right now.')]
       content.append(h('div', { class: 'section' },
         h('h3', null, 'Address to share'),
@@ -150,17 +148,41 @@ export function openConnectDialog(): void {
   m.footer.appendChild(h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, 'Done'))
   if (!ai) return void m.body.append(h('p', { class: 'muted' }, 'Only the host can connect AI apps.'))
   const url = ai.mcpUrl
-  const copyRow = (text: string, what: string, multiline = false): HTMLElement =>
-    h('div', { class: 'row url-row connect-row' },
-      multiline ? h('pre', { class: 'grow url small connect-block' }, text) : h('code', { class: 'grow url small' }, text),
-      h('button', { class: 'btn btn-small', type: 'button', title: `Copy ${what}`, onclick: async () => toast((await copyText(text)) ? `${what.replace(/^./, (c) => c.toUpperCase())} copied` : 'Could not copy. Select the text and copy it.', 'info') }, icon('copy'), ' Copy'))
+  const copyRow = (text: string, what: string, block = false): HTMLElement => copyBox(text, { what, block })
   const withUrl = JSON.stringify({ mcpServers: { latexwriter: { url } } }, null, 2)
   const withCommand = JSON.stringify({ mcpServers: { latexwriter: { command: 'npx', args: ['-y', 'mcp-remote', url] } } }, null, 2)
   const prompt = `Connect to LaTeX Writer, a LaTeX editor running on this Mac, through its MCP server (Model Context Protocol). Add an MCP server named "latexwriter" that uses the streamable HTTP transport at ${url}. It needs no authentication and only answers on this Mac while LaTeX Writer is running. If you can only start local commands, run it through mcp-remote instead: command "npx" with the arguments "-y", "mcp-remote", "${url}". Then call its project_info tool to check that it works, and follow the instructions the server sends: it works on the project that is open in the app, and your edits wait for my review there.`
   const found = ai.providers.filter((p) => p.available)
+  // Whether the MCP server answers: it is switched with the AI assistant in Settings.
+  const status = h('div', { class: 'mcp-status' })
+  const snippets = h('div', { class: 'connect-snippets' })
+  const renderStatus = (on: boolean): void => {
+    clear(status)
+    status.classList.toggle('off', !on)
+    snippets.classList.toggle('off', !on)
+    if (on) {
+      status.append(h('span', { class: 'mcp-dot', 'aria-hidden': 'true' }), h('span', { class: 'grow' }, h('strong', null, 'MCP server: on'), ` at ${url}`))
+      return
+    }
+    const turnOn = h('button', { class: 'btn btn-small btn-primary', type: 'button', onclick: async () => {
+      turnOn.disabled = true
+      try {
+        const res = await api<{ ai: AiSettings }>('POST', '/api/host/settings', { aiEnabled: true })
+        app.ai = res.ai
+        renderStatus(res.ai.enabled)
+      } catch (err) {
+        turnOn.disabled = false
+        toast((err as Error).message, 'error')
+      }
+    } }, 'Turn on')
+    status.append(h('span', { class: 'mcp-dot', 'aria-hidden': 'true' }),
+      h('span', { class: 'grow' }, h('strong', null, 'MCP server: off. '), 'It is switched on and off with the AI assistant, in Settings › Assistant. While it is off, no AI app can connect.'),
+      turnOn)
+  }
+  renderStatus(ai.enabled)
   const parts: (HTMLElement | null)[] = [
     h('p', null, 'LaTeX Writer\'s tools (read, search, edit, compile, check the PDF) are an MCP server. Any AI app that supports MCP can use them on the project that is open here. Edits wait for your review, as with the built-in assistant.'),
-    ai.enabled ? null : h('p', { class: 'notice warn' }, 'The AI assistant is turned off in Settings, and with it the tools. Turn it on first.'),
+    status,
     found.length ? h('div', { class: 'section' },
       h('h3', null, 'Found on this Mac'),
       h('p', { class: 'muted small' }, 'Run once in Terminal while LaTeX Writer is running:'),
@@ -177,9 +199,10 @@ export function openConnectDialog(): void {
       h('h3', null, 'Or let the AI do it'),
       h('p', { class: 'muted small' }, 'Paste this into an AI agent that can change its own settings:'),
       copyRow(prompt, 'the prompt', true)),
-    h('p', { class: 'muted small' }, 'The address only works on this Mac and only while LaTeX Writer is running. Web pages cannot use it.'),
   ]
-  m.body.append(...parts.filter((x): x is HTMLElement => x !== null))
+  snippets.append(...parts.slice(2).filter((x): x is HTMLElement => x !== null))
+  m.body.append(parts[0]!, status, snippets,
+    h('p', { class: 'muted small' }, 'The address only works on this Mac and only while LaTeX Writer is running. Web pages cannot use it.'))
 }
 
 // ---- settings --------------------------------------------------------------------------
@@ -267,7 +290,7 @@ export function openSettingsDialog(opts: { texFiles: string[]; onLeave: () => vo
       for (const p of a.providers) choice.append(h('option', { value: p.id, disabled: !p.available, selected: p.id === a.provider }, p.available ? p.name : `${p.name} (not found)`))
       choice.value = a.provider
       note.textContent = a.available
-        ? `A chat in the right sidebar that can edit, compile and check the document. It runs ${a.providerName} on this Mac and uses ${a.plan}, not an API key. It can only use this app's tools.`
+        ? `A chat in the right sidebar that can edit, compile and check the document. It runs ${a.providerName} on this Mac and uses ${a.plan}, not an API key. It can only use this app's tools. Turning it off also turns off the MCP server that other AI apps connect to.`
         : `${a.providerName} was not found on this Mac. Install it and sign in, then choose Search again.`
       clear(commands)
       commands.append(h('p', { class: 'muted small' },
@@ -478,11 +501,9 @@ export function openHistoryDialog(opts: { current: string | null; textFiles: str
 export async function openRawLog(): Promise<void> {
   const m = openModal({ title: 'LaTeX log', wide: true })
   const pre = h('pre', { class: 'history-preview raw-log' }, 'Loading…')
-  m.body.appendChild(pre)
-  m.footer.append(
-    iconButton('copy', 'Copy the log', async () => toast((await copyText(pre.textContent ?? '')) ? 'Log copied' : 'Could not copy', 'info')),
-    h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, 'Close'),
-  )
+  // The copy button sits in the log's top-right corner and stays there while the log scrolls.
+  m.body.appendChild(h('div', { class: 'copy-box block log-box' }, pre, copyButton(() => pre.textContent ?? '', { what: 'the log' })))
+  m.footer.append(h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, 'Close'))
   try {
     const res = await fetch('/api/project/log', { credentials: 'same-origin' })
     pre.textContent = await res.text()

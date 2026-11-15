@@ -282,9 +282,11 @@ export function mountWorkbench(root: HTMLElement, hooks: WorkbenchHooks): () => 
 
   function applyReview(r: ReviewSummary): void {
     review = r
-    aiBadge.textContent = r.changeCount ? String(r.changeCount) : ''
-    aiBadge.hidden = !r.changeCount
-    aiBadge.title = `${r.changeCount} change${r.changeCount === 1 ? '' : 's'} to review`
+    // The same count as the changes tray in the assistant: files with changes waiting for review.
+    const files = r.files.length
+    aiBadge.textContent = files ? String(files) : ''
+    aiBadge.hidden = !files
+    aiBadge.title = `${r.changeCount} change${r.changeCount === 1 ? '' : 's'} in ${files} file${files === 1 ? '' : 's'} to review`
     editor.setReview(hunksFor(currentFile))
     const canCompare = r.changeCount > 0 && r.hasBeforePdf
     beforeAfter.hidden = !canCompare

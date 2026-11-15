@@ -1,6 +1,6 @@
 import type { BuildResult, LogEntry } from './api.ts'
 import { openRawLog } from './dialogs.ts'
-import { clear, copyText, h, icon, iconButton, store, toast } from './dom.ts'
+import { clear, copyBox, h, icon, iconButton, store } from './dom.ts'
 
 export type LogPanelCallbacks = {
   onJump: (file: string, line: number | null) => void
@@ -90,10 +90,7 @@ export class LogPanel {
       h('div', { class: 'log-message' }, e.message),
       e.detail ? h('code', { class: 'log-detail' }, e.detail) : null,
       e.hint ? h('div', { class: 'log-hint' }, e.hint,
-        command ? h('button', { class: 'btn btn-small', type: 'button', onclick: async (ev: Event) => {
-          ev.stopPropagation()
-          toast((await copyText(command)) ? 'Command copied. Paste it into Terminal.' : 'Could not copy', 'info')
-        } }, icon('copy'), ' Copy command') : null) : null,
+        command ? copyBox(command, { what: 'the command, to paste into Terminal', class: 'log-command' }) : null) : null,
     )
     const attrs = { class: `log-row log-${e.severity} ${e.file ? 'clickable' : ''}` }
     const iconEl = h('span', { class: 'log-icon', title: e.severity }, icon(e.severity === 'info' ? 'info' : e.severity))
