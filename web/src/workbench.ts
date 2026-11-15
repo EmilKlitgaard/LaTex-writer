@@ -297,8 +297,24 @@ export function mountWorkbench(root: HTMLElement, hooks: WorkbenchHooks): () => 
       aiPanel = new AiPanel({
         context: () => editor.selectionContext(),
         onJump: (file, line) => void openFileWhenListed(file, line),
+        files: () => textFilesOf(tree),
+        symbol: (name) => {
+          const label = index.labels.find((l) => l.name === name)
+          if (label) return { file: label.file, line: label.line, what: `\\label{${name}}` }
+          const key = index.bibKeys.find((k) => k.key === name)
+          return key ? { file: key.file, line: key.line, what: `Citation ${name}` } : null
+        },
         onReview: applyReview,
         onClose: () => setAiOpen(false),
+        // A permission question waits for the user: make sure they can see it.
+        onAttention: () => {
+          if (!workbench.classList.contains('ai-open')) setAiOpen(true, false)
+        },
+        onBusy: (busy) => {
+          // Seen even with the sidebar closed: the assistant is still at work.
+          for (const el of [aiButton, narrowAiTab]) el.classList.toggle('working', busy)
+          aiButton.title = busy ? 'The assistant is working. Show or hide it.' : 'Show or hide the assistant'
+        },
       })
       aiSlot.appendChild(aiPanel.element)
     }
@@ -335,7 +351,7 @@ export function mountWorkbench(root: HTMLElement, hooks: WorkbenchHooks): () => 
 
   const titleEl = h('span', { class: 'project-title' }, app.project?.name ?? '')
   const compileLabel = h('span', null, 'Recompile')
-  const compileBtn = h('button', { class: 'btn btn-primary compile-btn', type: 'button', title: 'Compile now (⌘ Enter)', onclick: () => void compile() }, icon('refresh'), compileLabel)
+  const compileBtn = h('button', { class: 'btn btn-primary compile-btn', type: 'button', title: 'Compile now (⌘ Enter)', onclick: () => void compile() }, icon('refresh'), h('span', { class: 'compile-label' }, compileLabel))
   const autoToggle = h('input', { type: 'checkbox', checked: app.project?.autoCompile ?? true, onchange: () => {
     void api('POST', '/api/project/settings', { autoCompile: autoToggle.checked }).catch((err) => toast((err as Error).message, 'error'))
   } })
@@ -378,18 +394,42 @@ export function mountWorkbench(root: HTMLElement, hooks: WorkbenchHooks): () => 
     if (layout === 'editor') setLayout('split', false)
   }
 
+  /**
+   * The compile status in the top bar opens and closes the Problems list. That list sits under the
+   * PDF, so when the PDF is not on screen it is brought into view first, and the list opened.
+   */
+  function toggleProblems(): void {
+    const pdfHidden = narrow.matches ? workbench.dataset.view !== 'pdf' : layout === 'editor'
+    if (pdfHidden) {
+      if (narrow.matches) setNarrowView('pdf')
+      else showViewer()
+      logPanel.setOpen(true)
+      return
+    }
+    logPanel.setOpen(!logPanel.open)
+  }
+
   function setNarrowView(view: 'editor' | 'pdf' | 'ai'): void {
     if (view === 'ai' && !workbench.classList.contains('ai-open')) setAiOpen(true, false)
     workbench.dataset.view = view
     narrowSwitch.querySelectorAll<HTMLElement>('.tab').forEach((t) => t.classList.toggle('active', t.dataset.view === view))
   }
 
+  // Getting the work out: the PDF, the whole project, or (host) the editor on the network.
+  const shareMenu = (e: MouseEvent): void => {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    showMenu(r.right - 230, r.bottom + 4, [
+      isHost
+        ? { label: 'Save PDF to Downloads', icon: 'download', onclick: () => void exportPdf() }
+        : { label: 'Download PDF', icon: 'download', onclick: downloadPdf },
+      { label: 'Download project as .zip', icon: 'download', onclick: () => downloadUrl('/api/project/zip') },
+      ...(isHost ? ['separator' as const, { label: 'Share on your network…', icon: 'share', onclick: openShareDialog }] : []),
+    ])
+  }
+
   const moreMenu = (e: MouseEvent): void => {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
     showMenu(r.right - 210, r.bottom + 4, [
-      { label: 'Download PDF', icon: 'download', onclick: downloadPdf },
-      { label: 'Download project as .zip', icon: 'download', onclick: () => downloadUrl('/api/project/zip') },
-      'separator',
       { label: 'History and deleted files…', icon: 'history', onclick: () => openHistoryDialog({ current: currentFile, textFiles: textFilesOf(tree) }) },
       { label: 'Settings…', icon: 'settings', onclick: () => openSettingsDialog({ texFiles: texFilesOf(tree), onLeave: hooks.onLeave }) },
     ])
@@ -405,15 +445,13 @@ export function mountWorkbench(root: HTMLElement, hooks: WorkbenchHooks): () => 
       compileBtn,
       h('label', { class: 'check', title: 'Compile automatically shortly after you stop typing' }, autoToggle, 'Auto'),
       statusEl,
-      layoutSwitch,
       narrowSwitch,
     ),
     h('div', { class: 'topbar-right' },
+      layoutSwitch,
       peopleEl,
-      isHost
-        ? h('button', { class: 'btn', type: 'button', title: 'Save the PDF to your Downloads folder', onclick: () => void exportPdf() }, icon('download'), h('span', { class: 'btn-label' }, 'Export PDF'))
-        : h('button', { class: 'btn', type: 'button', title: 'Download the PDF', onclick: downloadPdf }, icon('download'), h('span', { class: 'btn-label' }, 'Download PDF')),
-      isHost ? h('button', { class: 'btn', type: 'button', onclick: openShareDialog }, icon('share'), h('span', { class: 'btn-label' }, 'Share')) : null,
+      h('button', { class: 'btn', type: 'button', title: isHost ? 'Save the PDF, download the project, or share on your network' : 'Download the PDF or the project', 'aria-haspopup': 'menu', onclick: shareMenu },
+        icon('share'), h('span', { class: 'btn-label' }, 'Share')),
       aiButton,
       iconButton('more', 'More', moreMenu),
     ),
@@ -454,18 +492,25 @@ export function mountWorkbench(root: HTMLElement, hooks: WorkbenchHooks): () => 
   function setCompiling(on: boolean): void {
     compileBtn.classList.toggle('busy', on)
     compileLabel.textContent = on ? 'Compiling…' : 'Recompile'
-    if (on) statusEl.textContent = ''
+    // The last result stays, dimmed, so the centred controls do not shift on every compile.
+    statusEl.classList.toggle('stale', on)
   }
 
   function setResult(r: BuildResult | null): void {
+    // A compile replaced by a newer one says nothing about the document: keep showing the last real
+    // result, so the error count and the Problems list do not flicker, and a list the user closed
+    // is not opened again as if the errors were new.
+    if (r?.status === 'cancelled') return
     result = r
     logPanel.setResult(r)
     editor.setLog(r?.entries ?? [])
     clear(statusEl)
     if (!r) return
-    if (r.status === 'success') statusEl.append(h('span', { class: 'status-ok' }, icon('check'), ` ${(r.durationMs / 1000).toFixed(1)} s`))
-    else if (r.status !== 'cancelled') {
-      statusEl.append(h('button', { class: 'status-error', type: 'button', onclick: () => logPanel.setOpen(true) },
+    if (r.status === 'success') {
+      statusEl.append(h('button', { class: 'status-ok', type: 'button', title: 'Show or hide the Problems list', onclick: toggleProblems },
+        icon('check'), ` ${(r.durationMs / 1000).toFixed(1)} s`))
+    } else {
+      statusEl.append(h('button', { class: 'status-error', type: 'button', title: 'Show or hide the Problems list', onclick: toggleProblems },
         icon('error'), r.status === 'timeout' ? ' Timed out' : ` ${r.errorCount || 1} error${r.errorCount > 1 ? 's' : ''}`))
     }
   }
@@ -610,7 +655,9 @@ export function mountWorkbench(root: HTMLElement, hooks: WorkbenchHooks): () => 
           app.ai = e.ai
           applyAiAvailability()
         }
-        aiPanel?.handleEvent(e)
+        // The panel reads the open question itself when it is first created.
+        if (e.kind === 'access' && e.requests?.length && !aiPanel) setAiOpen(true, false)
+        else aiPanel?.handleEvent(e)
         break
       case 'review':
         if (aiPanel) aiPanel.handleEvent(e)

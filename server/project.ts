@@ -7,8 +7,9 @@ import { pipeline } from 'node:stream/promises'
 import { Transform } from 'node:stream'
 import chokidar, { type FSWatcher } from 'chokidar'
 import { AiChat } from './ai.ts'
+import { PROJECT_NOTES_FILE } from './notes.ts'
 import { Compiler, type BuildResult } from './compile.ts'
-import { writeFileAtomic } from './config.ts'
+import { getConfig, updateConfig, writeFileAtomic } from './config.ts'
 import { DocManager } from './docs.ts'
 import { History, SNAPSHOT_INTERVAL_MS } from './history.ts'
 import { broadcast } from './hub.ts'
@@ -223,6 +224,19 @@ export class Project {
     this.indexCache = null
     this.scheduleReviewBroadcast()
     this.scheduleAutoCompile()
+  }
+
+  /**
+   * Writes the project notes file (INSTRUCTIONS.md). Unlike the assistant's edits to the document,
+   * this does not wait for review: it is the assistant's own memory, and the author can read and edit it.
+   */
+  writeNotes(content: string): void {
+    const { abs } = resolveInside(this.root, PROJECT_NOTES_FILE)
+    if (!fs.existsSync(abs)) {
+      fs.writeFileSync(abs, '', { flag: 'wx' })
+      this.scheduleTreeBroadcast()
+    }
+    this.docs.setContent(PROJECT_NOTES_FILE, content)
   }
 
   // ---- compile ----------------------------------------------------------------
@@ -526,15 +540,20 @@ export class Project {
         } catch {
           continue
         }
+        const lineAt = (offset: number): number => {
+          let line = 1
+          for (let i = content.indexOf('\n'); i >= 0 && i < offset; i = content.indexOf('\n', i + 1)) line++
+          return line
+        }
         if (ext === 'tex') {
-          for (const m of content.matchAll(/\\label\{([^}]+)\}/g)) labels.push({ name: m[1], file: n.path })
+          for (const m of content.matchAll(/\\label\{([^}]+)\}/g)) labels.push({ name: m[1], file: n.path, line: lineAt(m.index) })
         } else {
           for (const m of content.matchAll(/@(\w+)\s*\{\s*([^,\s}]+)\s*,/g)) {
             if (/^(string|comment|preamble)$/i.test(m[1])) continue
             const rest = content.slice(m.index, m.index + 1500)
             const title = /\btitle\s*=\s*[{"]+([^}"]+)/i.exec(rest)?.[1]
             const author = /\bauthor\s*=\s*[{"]+([^}"]+)/i.exec(rest)?.[1]
-            bibKeys.push({ key: m[2], title: title?.replace(/\s+/g, ' '), author: author?.replace(/\s+/g, ' ') })
+            bibKeys.push({ key: m[2], file: n.path, line: lineAt(m.index), title: title?.replace(/\s+/g, ' '), author: author?.replace(/\s+/g, ' ') })
           }
         }
       }
@@ -562,8 +581,8 @@ export class Project {
 }
 
 export type ProjectIndex = {
-  labels: { name: string; file: string }[]
-  bibKeys: { key: string; title?: string; author?: string }[]
+  labels: { name: string; file: string; line: number }[]
+  bibKeys: { key: string; file: string; line: number; title?: string; author?: string }[]
   files: string[]
 }
 
@@ -579,6 +598,7 @@ export function currentProject(): Project | null {
 async function projectGone(project: Project): Promise<void> {
   if (current !== project) return
   current = null
+  rememberOpen(null)
   const name = project.settings.name
   await project.close().catch((err) => console.error(err))
   broadcast('project', { project: null })
@@ -597,11 +617,18 @@ export function requireProject(): Project {
   return current
 }
 
+/** Remembers which project is open, so a server started again after a crash can reopen it. */
+export function rememberOpen(root: string | null): void {
+  if (getConfig().openProject === root) return
+  updateConfig((c) => void (c.openProject = root))
+}
+
 export async function openProject(root: string): Promise<Project> {
   const real = fs.realpathSync(root)
   if (current?.root === real) return current
   await closeProject(false)
   current = new Project(real, (p) => void projectGone(p))
+  rememberOpen(real)
   broadcast('project', { project: current.info() })
   current.scheduleAutoCompile(200)
   return current

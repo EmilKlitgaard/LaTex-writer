@@ -10,7 +10,8 @@ export const LOG_DIR = path.join(APP_HOME, 'logs')
 export const WEB_BUILD_DIR = path.join(APP_HOME, 'build/web')
 const CONFIG_FILE = path.join(APP_HOME, 'config.json')
 
-export const DEFAULT_PORT = 4173
+/** LATEXWRITER_PORT is for tests; the apps and launchers use 4173. */
+export const DEFAULT_PORT = Number(process.env.LATEXWRITER_PORT) || 4173
 
 export type RecentWorkspace = { path: string; lastProject?: string; lastOpened: number }
 
@@ -19,8 +20,13 @@ export type Config = {
   lan: { enabled: boolean; passcodeHash: string | null }
   hostName: string
   lastPort: number
-  /** The assistant add-on: off means no sidebar, no chat and no tool endpoint. */
-  ai: { enabled: boolean; model: string; effort: string }
+  /** The project open right now (null on the home screen), so a restarted server can open it again. */
+  openProject: string | null
+  /**
+   * The assistant add-on: off means no sidebar, no chat and no tool endpoint. provider: the agent
+   * that runs it (claude or codex); model: that agent's model; models: the last model per agent.
+   */
+  ai: { enabled: boolean; provider: string; model: string; effort: string; models: Record<string, string> }
 }
 
 const defaults = (): Config => ({
@@ -28,7 +34,8 @@ const defaults = (): Config => ({
   lan: { enabled: false, passcodeHash: null },
   hostName: os.userInfo().username || 'Host',
   lastPort: DEFAULT_PORT,
-  ai: { enabled: true, model: 'sonnet', effort: 'medium' },
+  openProject: null,
+  ai: { enabled: true, provider: 'claude', model: 'sonnet', effort: 'medium', models: {} },
 })
 
 let config: Config = defaults()
@@ -42,7 +49,7 @@ export function loadConfig(): Config {
       ...d,
       ...raw,
       lan: { ...d.lan, ...(raw.lan ?? {}) },
-      ai: { ...d.ai, ...(raw.ai ?? {}) },
+      ai: { ...d.ai, ...(raw.ai ?? {}), models: { ...(raw.ai?.models ?? {}) } },
       recentWorkspaces: Array.isArray(raw.recentWorkspaces) ? raw.recentWorkspaces : [],
     }
   } catch (err) {

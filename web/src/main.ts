@@ -2,6 +2,7 @@ import './style.css'
 import { api, ApiError, setUnauthorizedHandler, type AiSettings, type ProjectInfo, type User } from './api.ts'
 import { app, applyFontSize, applyTheme } from './app.ts'
 import { clear, h, toast } from './dom.ts'
+import { leaveProject } from './dialogs.ts'
 import { mountHome, mountLogin, mountWaiting } from './home.ts'
 import { mountWorkbench } from './workbench.ts'
 
@@ -31,7 +32,7 @@ function route(): void {
   if (!app.user) return showLogin(null)
   if (app.project) {
     show(() => mountWorkbench(root, {
-      onBack: () => void api('POST', '/api/host/project/close', {}).catch((err) => toast((err as Error).message, 'error')),
+      onBack: () => void leaveProject((force) => api('POST', '/api/host/project/close', { force })).catch((err) => toast((err as Error).message, 'error')),
       onLeave: leave,
     }))
   } else if (app.user.role === 'host') show(() => mountHome(root))

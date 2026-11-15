@@ -22,7 +22,7 @@ export type BuildResult = {
   warningCount: number
   finishedAt: number
 }
-export type ProjectIndex = { labels: { name: string; file: string }[]; bibKeys: { key: string; title?: string; author?: string }[]; files: string[] }
+export type ProjectIndex = { labels: { name: string; file: string; line: number }[]; bibKeys: { key: string; file: string; line: number; title?: string; author?: string }[]; files: string[] }
 export type Snapshot = { id: string; t: number; size: number; reason: string }
 
 export type Hunk = { id: string; oldStart: number; oldLines: string[]; newStart: number; newLines: string[] }
@@ -30,15 +30,29 @@ export type ReviewFile = { path: string; status: 'modified' | 'added'; hunks: Hu
 export type ReviewSummary = { files: ReviewFile[]; changeCount: number; hasBeforePdf: boolean }
 export type ChatPart = { kind: 'text'; text: string } | { kind: 'tool'; id: string; label: string; status: 'running' | 'done' | 'error'; parent?: string }
 export type ChatMessage = { id: string; role: 'user' | 'assistant'; parts: ChatPart[]; error?: string; t: number }
+export type ChatSummary = { id: string; title: string; t: number; active: boolean }
 export type ChatContext = { file?: string; line?: number; selection?: string; selectionStart?: number; selectionEnd?: number }
-export type AiSettings = { enabled: boolean; available: boolean; model: string; models: string[]; effort: string; efforts: string[] }
+export type SkillInfo = { name: string; description: string; hint: string }
+export type AiProvider = { id: string; name: string; plan: string; available: boolean; path: string | null; mcpCommand: string }
+export type AiSettings = {
+  enabled: boolean
+  /** The agent that runs the chat, and every agent the app knows (found on this Mac or not). */
+  provider: string; providerName: string; plan: string; providers: AiProvider[]
+  available: boolean; model: string; models: { id: string; label: string }[]; effort: string; efforts: string[]; skills?: SkillInfo[]
+}
+export type AiActivity = { label: string; started: number }
+export type AccessRequest = { id: string; project: string; path: string; reason: string; t: number }
+export type GrantedProject = { name: string; path: string }
 export type AiUsage = { fiveHour?: number; sevenDay?: number; resetsAt?: number; context?: number }
 
 export class ApiError extends Error {
   status: number
-  constructor(status: number, message: string) {
+  /** The server's reason code, for errors the page reacts to (for example "assistant-busy"). */
+  code?: string
+  constructor(status: number, message: string, code?: string) {
     super(message)
     this.status = status
+    this.code = code
   }
 }
 
@@ -71,7 +85,7 @@ export async function api<T = any>(method: string, url: string, body?: unknown):
   } catch {}
   if (!res.ok) {
     if (res.status === 401 && !url.startsWith('/api/auth/')) onUnauthorized?.()
-    throw new ApiError(res.status, json?.error ?? `Request failed (${res.status})`)
+    throw new ApiError(res.status, json?.error ?? `Request failed (${res.status})`, typeof json?.code === 'string' ? json.code : undefined)
   }
   return json as T
 }

@@ -168,7 +168,7 @@ test('creating a project applies the structure and opens it', async () => {
   assert.ok(fs.existsSync(path.join(projectDir, '.latexwriter/project.json')))
   assert.equal(res.json.project.name, 'Test: Project')
   const tree = (await host('GET', '/api/project/tree')).json.tree
-  assert.deepEqual(tree.map((n: any) => n.name), ['main.tex', 'references.bib'])
+  assert.deepEqual(tree.map((n: any) => n.name), ['INSTRUCTIONS.md', 'main.tex', 'references.bib'])
   const dup = await host('POST', '/api/host/project/create', { workspace: WORKSPACE, name: 'Test Project', template: 'blank' })
   assert.equal(dup.status, 409)
   const ws = (await host('GET', `/api/host/workspace?path=${encodeURIComponent(WORKSPACE)}`)).json
@@ -184,7 +184,7 @@ test('the project compiles and the PDF lands next to main.tex', async () => {
   const pdf = await fetch(`${HOST}/api/project/pdf`)
   assert.equal((await pdf.text()).slice(0, 5), '%PDF-')
   // No build litter in the project folder.
-  assert.deepEqual(fs.readdirSync(projectDir).sort(), ['.latexwriter', 'main.pdf', 'main.tex', 'references.bib'])
+  assert.deepEqual(fs.readdirSync(projectDir).sort(), ['.latexwriter', 'INSTRUCTIONS.md', 'main.pdf', 'main.tex', 'references.bib'])
 })
 
 test('compiling again without changes keeps the result instead of failing', async () => {
@@ -338,6 +338,15 @@ test('the index lists labels, citation keys and files', async () => {
   assert.ok(idx.labels.some((l: any) => l.name === 'sec:method' && l.file === 'main.tex'))
   assert.deepEqual(idx.bibKeys.map((k: any) => k.key), ['knuth1984'])
   assert.ok(idx.files.includes('fig.png'))
+})
+
+test('the index says on which line each label and citation key is defined', async () => {
+  const idx = (await host('GET', '/api/project/index')).json
+  const lineOf = async (file: string): Promise<string[]> => (await host('GET', `/api/project/raw?path=${encodeURIComponent(file)}`)).text.split('\n')
+  const label = idx.labels.find((l: any) => l.name === 'sec:method')
+  assert.ok((await lineOf(label.file))[label.line - 1].includes('\\label{sec:method}'))
+  const key = idx.bibKeys.find((k: any) => k.key === 'knuth1984')
+  assert.ok((await lineOf(key.file))[key.line - 1].includes('knuth1984'))
 })
 
 test('export copies the PDF to Downloads without overwriting', async () => {
@@ -502,14 +511,51 @@ test('the tool endpoint speaks MCP and refuses web pages', async () => {
   const note = await fetch(`${HOST}/mcp`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) })
   assert.equal(note.status, 202)
   const names = (await mcp('tools/list')).json.result.tools.map((t: any) => t.name)
-  for (const n of ['project_info', 'read_file', 'search', 'edit_file', 'write_file', 'compile', 'check_layout', 'read_pdf_text', 'view_page', 'read_log']) assert.ok(names.includes(n), n)
+  for (const n of ['project_info', 'read_file', 'search', 'edit_file', 'write_file', 'compile', 'check_layout', 'read_pdf_text', 'view_page', 'read_log', 'use_skill', 'list_sources', 'request_access', 'copy_file']) assert.ok(names.includes(n), n)
   assert.equal((await mcp('no/such/method')).json.error.code, -32601)
   // Errors come back in two forms: protocol errors for bad requests, isError results for failed tools.
   assert.equal((await mcp('tools/call', { name: 'rm_rf', arguments: {} })).json.error.code, -32602)
   assert.equal((await mcp('tools/call', { name: 'read_file', arguments: { path: 'nope.tex' } })).json.result.isError, true)
   // A browser always sends Origin on a cross-site POST; that is how a web page is kept out.
+  // The writing skills: a tool the model can call, and prompts for MCP clients.
+  assert.deepEqual(init.json.result.capabilities, { tools: {}, prompts: {} })
+  const skill = (await tool('use_skill', { name: 'humanize', request: 'the introduction' })).content[0].text
+  assert.match(skill, /^<skill name="humanize">[\s\S]*<guide>[\s\S]*<\/guide>\n<\/skill>\n\nThe user's request for \/humanize: the introduction$/)
+  assert.equal((await tool('use_skill', { name: 'nope' })).isError, true)
+  const prompts = (await mcp('prompts/list')).json.result.prompts
+  assert.deepEqual(prompts.map((p: any) => p.name), ['humanize', 'humanize-audit', 'humanize-draft'])
+  assert.equal(prompts[0].arguments[0].name, 'request')
+  const got = (await mcp('prompts/get', { name: 'humanize-draft', arguments: { request: 'a related-work paragraph' } })).json.result
+  assert.equal(got.messages[0].role, 'user')
+  assert.match(got.messages[0].content.text, /^<skill name="humanize-draft">[\s\S]*: a related-work paragraph$/)
+  assert.equal((await mcp('prompts/get', { name: 'nope' })).json.error.code, -32602)
   assert.equal((await mcp('tools/list', undefined, { Origin: 'http://evil.example' })).status, 403)
   assert.equal((await mcp('tools/list', undefined, { Origin: HOST })).status, 403)
+})
+
+test('agents share memory through INSTRUCTIONS.md in the project and a global preferences file', async () => {
+  const info = (await tool('project_info')).content[0].text
+  assert.match(info, /Project notes \(INSTRUCTIONS\.md[\s\S]*Open tasks and progress[\s\S]*writing preferences[\s\S]*My writing preferences/)
+  assert.ok(fs.existsSync(path.join(projectDir, 'INSTRUCTIONS.md')), 'the notes file lives with the other project files')
+  assert.match(JSON.stringify((await host('GET', '/api/project/tree')).json.tree), /INSTRUCTIONS\.md/)
+
+  // Notes are the agents' own memory: written at once, not held for review.
+  assert.equal((await tool('update_notes', { file: 'project', text: 'Use British spelling.' })).isError, undefined)
+  assert.match((await tool('read_notes')).content[0].text, /- Use British spelling\./)
+  assert.match(fs.readFileSync(path.join(projectDir, 'INSTRUCTIONS.md'), 'utf8'), /- Use British spelling\./)
+  assert.equal((await host('GET', '/api/host/ai/state')).json.review.changeCount, 0)
+
+  // The author's preferences change only with a stated reason.
+  assert.equal((await tool('update_notes', { file: 'preferences', text: 'Short sentences.' })).isError, true)
+  assert.equal((await tool('update_notes', { file: 'preferences', text: 'Short sentences.', reason: 'The author asked for it' })).isError, undefined)
+  assert.match(fs.readFileSync(path.join(HOME, 'Library/Application Support/LaTeXWriter/PREFERENCES.md'), 'utf8'), /- Short sentences\./)
+
+  // Past the size limit an agent must condense the file instead of adding to it.
+  const refused = await tool('update_notes', { file: 'project', text: 'x'.repeat(8100) })
+  assert.equal(refused.isError, true)
+  assert.match(refused.content[0].text, /replace/)
+  assert.equal((await tool('update_notes', { file: 'project', mode: 'replace', text: '# Project notes\n- Condensed.' })).isError, undefined)
+  assert.doesNotMatch((await tool('read_notes')).content[0].text, /British/)
 })
 
 test('assistant edits are live but pending; each change can be accepted or declined', async () => {
@@ -680,6 +726,7 @@ echo '{"type":"result","is_error":false,"result":"Hi from the stand-in."}'
     { kind: 'tool', id: 'h1', label: 'Looked at pages 1, 2, 3', status: 'done', parent: 'a1' },
   ])
   assert.equal(done.chat.usage.fiveHour, 0.5)
+  assert.equal(done.chat.activity, null, 'nothing is shown as in progress once the turn is over')
   assert.equal(done.chat.usage.context, 42510, 'context size of the main conversation, not the helper')
 
   const args = fs.readFileSync(path.join(HOME, 'cli-args.txt'), 'utf8').split('\n')
@@ -693,10 +740,12 @@ echo '{"type":"result","is_error":false,"result":"Hi from the stand-in."}'
   const agents = JSON.parse(flag('--agents'))
   assert.deepEqual(Object.keys(agents), ['reader', 'layout-checker', 'writer'])
   assert.equal(agents.reader.model, 'haiku')
-  assert.ok(agents.reader.tools.every((x: string) => /^mcp__latexwriter__(project_info|read_file|search|read_pdf_text)$/.test(x)), 'the reader cannot edit')
+  assert.ok(agents.reader.tools.every((x: string) => /^mcp__latexwriter__(project_info|read_file|search|read_pdf_text|use_skill|list_sources)$/.test(x)), 'the reader cannot edit or ask for access')
+  assert.ok(agents.writer.tools.includes('mcp__latexwriter__use_skill'), 'the writer can load a skill it is handed')
+  assert.match(fs.readFileSync(path.join(HOME, 'cli-args.txt'), 'utf8'), /Writing skills \(use_skill\)[\s\S]*- humanize-audit: /)
   assert.ok(!agents['layout-checker'].tools.some((x: string) => /edit_file|write_file/.test(x)), 'the layout checker cannot edit')
   assert.match(fs.readFileSync(path.join(HOME, 'cli-args.txt'), 'utf8'), /set run_in_background to false/)
-  assert.deepEqual(JSON.parse(flag('--mcp-config')), { mcpServers: { latexwriter: { type: 'http', url: `http://127.0.0.1:${PORT}/mcp` } } })
+  assert.deepEqual(JSON.parse(flag('--mcp-config')), { mcpServers: { latexwriter: { type: 'http', url: `http://127.0.0.1:${PORT}/mcp?chat=${done.chat.activeId}` } } })
   assert.equal(args.includes('--resume'), false)
   const stdin = fs.readFileSync(path.join(HOME, 'cli-stdin.txt'), 'utf8')
   assert.match(stdin, /<context>\nProject "Test: Project"\. Main file: main\.tex\.[\s\S]*main\.tex open, cursor at line 18\.[\s\S]*Selected text \(lines 18-18\):\nWrite a short summary\n<\/context>\n\nTighten the abstract$/)
@@ -710,11 +759,22 @@ echo '{"type":"result","is_error":false,"result":"Hi from the stand-in."}'
   assert.equal(args2[args2.indexOf('--resume') + 1], '11111111-1111-1111-1111-111111111111')
   assert.equal(fs.readFileSync(path.join(HOME, 'cli-stdin.txt'), 'utf8'), 'And the title?')
 
+  // A /command reaches the model as the skill's instructions; the chat shows what the user typed.
+  assert.ok((await chat()).ai.skills.some((s: any) => s.name === 'humanize' && s.hint && s.description))
+  const unknown = await host('POST', '/api/host/ai/send', { text: '/humanise it' })
+  assert.equal(unknown.status, 400)
+  assert.match(unknown.json.error, /\/humanize-audit/)
+  assert.equal((await chat()).chat.messages.length, 4, 'an unknown command adds nothing to the chat')
+  await host('POST', '/api/host/ai/send', { text: '/humanize-audit section 2', context: { file: 'main.tex', line: 3 } })
+  await until(async () => ((await chat()).chat.messages.length === 6 && !(await chat()).chat.busy), 'skill turn')
+  assert.equal((await chat()).chat.messages[4].parts[0].text, '/humanize-audit section 2')
+  assert.match(fs.readFileSync(path.join(HOME, 'cli-stdin.txt'), 'utf8'), /^<context>\nThe user has main\.tex open, cursor at line 3\.\n<\/context>\n\n<skill name="humanize-audit">[\s\S]*<guide>[\s\S]*request for \/humanize-audit: section 2$/)
+
   // The model and effort choices are passed on.
   await host('POST', '/api/host/settings', { aiModel: 'haiku', aiEffort: 'low' })
   await host('POST', '/api/host/settings', { aiModel: 'not-a-model', aiEffort: 'extreme' })
   await host('POST', '/api/host/ai/send', { text: 'Third' })
-  await until(async () => ((await chat()).chat.messages.length === 6 && !(await chat()).chat.busy), 'third turn')
+  await until(async () => ((await chat()).chat.messages.length === 8 && !(await chat()).chat.busy), 'third turn')
   const args3 = fs.readFileSync(path.join(HOME, 'cli-args.txt'), 'utf8').split('\n')
   assert.equal(args3[args3.indexOf('--model') + 1], 'haiku')
   assert.equal(args3[args3.indexOf('--effort') + 1], 'low')
@@ -726,6 +786,32 @@ echo '{"type":"result","is_error":false,"result":"Hi from the stand-in."}'
   await until(async () => ((await chat()).chat.messages.length === 2 && !(await chat()).chat.busy), 'turn after reset')
   assert.equal(fs.readFileSync(path.join(HOME, 'cli-args.txt'), 'utf8').split('\n').includes('--resume'), false)
 
+  // The earlier chat was kept, and can be reopened and continued.
+  let chats = (await chat()).chat.chats
+  assert.deepEqual(chats.map((c: any) => [c.title, c.active]), [['Fresh start', true], ['Tighten the abstract', false]])
+  assert.equal((await host('POST', '/api/host/ai/open', { id: chats[1].id })).status, 200)
+  const reopened = (await chat()).chat
+  assert.equal(reopened.messages.length, 8)
+  assert.deepEqual(reopened.chats.map((c: any) => [c.title, c.active]), [['Tighten the abstract', true], ['Fresh start', false]])
+  await host('POST', '/api/host/ai/send', { text: 'Continue' })
+  await until(async () => ((await chat()).chat.messages.length === 10 && !(await chat()).chat.busy), 'turn in a reopened chat')
+  assert.ok(fs.readFileSync(path.join(HOME, 'cli-args.txt'), 'utf8').split('\n').includes('--resume'), 'the reopened chat resumes its session')
+
+  // At most 10 chats are kept, the oldest go first, and any chat can be deleted.
+  for (let i = 1; i <= 11; i++) {
+    await host('POST', '/api/host/ai/reset', {})
+    await host('POST', '/api/host/ai/send', { text: `Chat ${i}` })
+    await until(async () => !(await chat()).chat.busy && (await chat()).chat.messages.length === 2, `chat ${i}`)
+  }
+  chats = (await chat()).chat.chats
+  assert.equal(chats.length, 10)
+  assert.deepEqual([chats[0].title, chats[0].active, chats[9].title], ['Chat 11', true, 'Chat 2'])
+  await host('POST', '/api/host/ai/delete', { id: chats[5].id })
+  assert.equal((await chat()).chat.chats.length, 9)
+  await host('POST', '/api/host/ai/delete', { id: chats[0].id })
+  const afterDelete = (await chat()).chat
+  assert.deepEqual([afterDelete.messages.length, afterDelete.chats.length, afterDelete.chats.some((c: any) => c.active)], [0, 8, false])
+
   // Turned off, the add-on disappears completely: no chat and no tool endpoint.
   assert.equal((await host('POST', '/api/host/settings', { aiEnabled: false })).json.ai.enabled, false)
   assert.equal((await host('POST', '/api/host/ai/send', { text: 'hello' })).status, 403)
@@ -736,16 +822,295 @@ echo '{"type":"result","is_error":false,"result":"Hi from the stand-in."}'
   delete process.env.ANTHROPIC_API_KEY
 })
 
+test('other projects are readable only after the user allows it, and attachments only in their chat', async () => {
+  // A finished exercise next to the open project, and a second one the user will not share.
+  const ex1 = path.join(WORKSPACE, 'Exercise 1')
+  const ex3 = path.join(WORKSPACE, 'Exercise 3')
+  for (const dir of [ex1, ex3]) {
+    fs.mkdirSync(path.join(dir, 'sections'), { recursive: true })
+    fs.writeFileSync(path.join(dir, 'main.tex'), '\\documentclass{article}\n\\input{sections/header}\n')
+  }
+  fs.writeFileSync(path.join(ex1, 'sections/header.tex'), '% Exercise header\n\\section*{Exercise}\n')
+  fs.writeFileSync(path.join(ex1, 'sections/logo.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 0]))
+  fs.mkdirSync(path.join(ex1, '.latexwriter'))
+  fs.writeFileSync(path.join(ex1, '.latexwriter/secret.txt'), 'internal')
+  const state = async (): Promise<any> => (await host('GET', '/api/host/ai/state')).json.chat
+
+  let sources = (await tool('list_sources')).content[0].text
+  assert.match(sources, /Exercise 1 {2}\(needs permission/)
+  const blocked = await tool('read_file', { source: 'Exercise 1', path: 'main.tex' })
+  assert.equal(blocked.isError, true)
+  assert.match(blocked.content[0].text, /request_access/)
+
+  // The question waits for the user's answer in the panel.
+  const asking = tool('request_access', { project: 'Exercise 1', reason: 'To copy the structure of exercise 1' })
+  const req = await until(async () => (await state()).requests[0], 'the permission question')
+  assert.deepEqual([req.project, req.reason], ['Exercise 1', 'To copy the structure of exercise 1'])
+  assert.equal((await host('POST', '/api/host/ai/access/answer', { id: req.id, allow: true })).status, 200)
+  assert.match((await asking).content[0].text, /^Allowed/)
+  assert.equal((await host('POST', '/api/host/ai/access/answer', { id: req.id, allow: true })).status, 404, 'answered once')
+  assert.deepEqual((await state()).granted.map((g: any) => g.name), ['Exercise 1'])
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(projectDir, '.latexwriter/access.json'), 'utf8')).projects, [ex1], 'kept with this project')
+
+  // Read-only access: list, read, search, but no way out of that folder and no internal files.
+  assert.match((await tool('project_info', { source: 'Exercise 1' })).content[0].text, /sections\/header\.tex {2}\(3 lines\)[\s\S]*sections\/logo\.png {2}\(binary\)/)
+  assert.doesNotMatch((await tool('project_info', { source: 'Exercise 1' })).content[0].text, /secret/)
+  assert.match((await tool('read_file', { source: 'Exercise 1', path: 'sections/header.tex' })).content[0].text, /read-only[\s\S]*% Exercise header/)
+  assert.match((await tool('search', { source: 'exercise 1', query: 'section*' })).content[0].text, /^sections\/header\.tex:2:/)
+  for (const bad of ['../Test Project/main.tex', '.latexwriter/secret.txt', '/etc/hosts']) {
+    assert.equal((await tool('read_file', { source: 'Exercise 1', path: bad })).isError, true, bad)
+  }
+  assert.equal((await tool('edit_file', { source: 'Exercise 1', path: 'main.tex', edits: [{ old_text: 'article', new_text: 'x' }] })).isError, true, 'edits only ever go to the open project')
+  assert.equal(fs.readFileSync(path.join(ex1, 'main.tex'), 'utf8'), '\\documentclass{article}\n\\input{sections/header}\n')
+
+  // Copying keeps the structure, never overwrites, and text files wait for review.
+  const copied = (await tool('copy_file', { source: 'Exercise 1' })).content[0].text
+  assert.match(copied, /Copied 2 files[\s\S]*sections\/header\.tex[\s\S]*Skipped[\s\S]*main\.tex/)
+  assert.ok(fs.existsSync(path.join(projectDir, 'sections/logo.png')))
+  assert.ok((await review()).files.some((f: any) => f.path === 'sections/header.tex' && f.status === 'added'))
+  assert.match((await tool('copy_file', { source: 'Exercise 1', path: 'sections/header.tex', to: 'parts/head.tex' })).content[0].text, /parts\/head\.tex/)
+
+  // A no is a plain answer, and nothing is granted.
+  const asking3 = tool('request_access', { project: 'Exercise 3', reason: 'Compare' })
+  const req3 = await until(async () => (await state()).requests[0], 'the second question')
+  await host('POST', '/api/host/ai/access/answer', { id: req3.id, allow: false })
+  const no = await asking3
+  assert.ok(!no.isError && /did not allow/.test(no.content[0].text))
+  assert.equal((await tool('read_file', { source: 'Exercise 3', path: 'main.tex' })).isError, true)
+  assert.match((await tool('request_access', { project: 'Nope', reason: 'x' })).content[0].text, /no project "Nope"[\s\S]*Exercise 1/)
+
+  // Taking it back closes the door again.
+  await host('POST', '/api/host/ai/access/revoke', { path: ex1 })
+  assert.equal((await tool('read_file', { source: 'Exercise 1', path: 'main.tex' })).isError, true)
+
+  // Attachments belong to one chat: tools called for another chat (or from outside the app) cannot see them.
+  const outside = fs.mkdtempSync(path.join(HOME, 'notes-'))
+  fs.writeFileSync(path.join(outside, 'rules.md'), '# Rules\nUse \\section* for exercises.\n')
+  const attached = (await host('POST', '/api/host/ai/attach', { paths: [outside, '/definitely/missing', 'relative/path'] })).json.attachments
+  assert.deepEqual(attached, [outside])
+  const chatId = (await state()).activeId
+  const tool4chat = async (id: string, name: string, args: Record<string, unknown>): Promise<any> => {
+    const res = await fetch(`${HOST}/mcp?chat=${id}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }) })
+    return (await res.json()).result
+  }
+  assert.match((await tool4chat(chatId, 'read_file', { source: outside, path: 'rules.md' })).content[0].text, /Use \\section\*/)
+  assert.match((await tool4chat(chatId, 'read_file', { source: path.join(outside, 'rules.md') })).content[0].text, /# Rules/, 'a path inside an attached folder works as a source')
+  assert.equal((await tool4chat('another-chat', 'read_file', { source: outside, path: 'rules.md' })).isError, true)
+  assert.equal((await tool('read_file', { source: outside, path: 'rules.md' })).isError, true)
+  // The assistant is told about the attachment with the next message, once.
+  await host('POST', '/api/host/ai/send', { text: 'Structure this like my rules' })
+  await until(async () => !(await state()).busy && (await state()).messages.length >= 2, 'the turn with an attachment')
+  assert.match(fs.readFileSync(path.join(HOME, 'cli-stdin.txt'), 'utf8'), new RegExp(`attached these for this conversation[^\\n]*${outside.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
+  await host('POST', '/api/host/ai/detach', { path: outside })
+  assert.deepEqual((await state()).attachments, [])
+  await host('POST', '/api/host/ai/reset', {})
+
+  // Leave the project as it was for the tests that follow.
+  await host('POST', '/api/host/review/decline', {})
+  fs.rmSync(path.join(projectDir, 'sections'), { recursive: true, force: true })
+  fs.rmSync(ex1, { recursive: true })
+  fs.rmSync(ex3, { recursive: true })
+})
+
+test('Codex can run the chat instead of Claude Code, with only this app\'s tools', async () => {
+  // A stand-in for the Codex CLI: its model catalog, and a canned `codex exec --json` stream.
+  const bin = path.join(HOME, 'bin')
+  fs.writeFileSync(path.join(bin, 'codex'), `#!/bin/bash
+if [ "$1" = debug ]; then echo '{"models":[{"slug":"gpt-test","display_name":"GPT Test","visibility":"list"},{"slug":"gpt-hidden","display_name":"Hidden","visibility":"hide"}]}'; exit 0; fi
+printf '%s\\n' "$@" > "$HOME/codex-args.txt"
+cat > "$HOME/codex-stdin.txt"
+env > "$HOME/codex-env.txt"
+echo '{"type":"thread.started","thread_id":"01a1dfd8-0000-7000-8000-000000000001"}'
+echo '{"type":"turn.started"}'
+echo '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"Looking."}}'
+echo '{"type":"item.started","item":{"id":"item_1","type":"mcp_tool_call","server":"latexwriter","tool":"read_file","arguments":{"path":"main.tex"},"result":null,"error":null,"status":"in_progress"}}'
+echo '{"type":"item.completed","item":{"id":"item_1","type":"mcp_tool_call","server":"latexwriter","tool":"read_file","arguments":{"path":"main.tex"},"result":{"content":[]},"error":null,"status":"completed"}}'
+echo '{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"Done from Codex."}}'
+echo '{"type":"turn.completed","usage":{"input_tokens":1234,"cached_input_tokens":1000,"output_tokens":5}}'
+`, { mode: 0o755 })
+  process.env.OPENAI_API_KEY = 'sk-should-never-reach-codex'
+  const state = async (): Promise<any> => (await host('GET', '/api/host/ai/state')).json
+
+  // Searching finds both agents; Codex offers the models of its own catalog.
+  const found = (await host('POST', '/api/host/ai/detect', {})).json.ai
+  assert.deepEqual(found.providers.map((p: any) => [p.id, p.available]), [['claude', true], ['codex', true]])
+  assert.equal(found.providers[1].path, path.join(bin, 'codex'))
+  assert.match(found.providers[1].mcpCommand, /^codex mcp add latexwriter --url http:\/\/localhost:\d+\/mcp$/)
+  assert.equal(found.provider, 'claude')
+
+  // A turn with Claude first, so switching has something to hand over.
+  await host('POST', '/api/host/ai/reset', {})
+  await host('POST', '/api/host/ai/send', { text: 'Remember: the deadline is Friday' })
+  await until(async () => !(await state()).chat.busy && (await state()).chat.messages.length === 2, 'the Claude turn')
+
+  const claudeModel = (await state()).ai.model
+  const switched = (await host('POST', '/api/host/settings', { aiProvider: 'codex' })).json.ai
+  assert.deepEqual([switched.provider, switched.model, switched.models.map((m: any) => m.id)], ['codex', 'gpt-test', ['gpt-test']])
+  assert.equal((await host('POST', '/api/host/settings', { aiModel: 'opus' })).json.ai.model, 'gpt-test', 'a Claude model is not a Codex model')
+
+  await host('POST', '/api/host/ai/send', { text: 'What is in main.tex?' })
+  const done = await until(async () => {
+    const s = await state()
+    return !s.chat.busy && s.chat.messages.length === 4 ? s : null
+  }, 'the Codex turn')
+  const reply = done.chat.messages[3]
+  assert.deepEqual(reply.parts.map((p: any) => (p.kind === 'text' ? p.text : [p.label, p.status])), ['Looking.', ['Read main.tex', 'done'], 'Done from Codex.'])
+  assert.equal(reply.error, undefined)
+  assert.equal(done.chat.usage.context, 1234)
+
+  const args = fs.readFileSync(path.join(HOME, 'codex-args.txt'), 'utf8').split('\n')
+  assert.equal(args[0], 'exec')
+  assert.ok(!args.includes('resume'), 'a new Codex session, not the Claude one')
+  for (const f of ['shell_tool', 'unified_exec', 'apps', 'plugins', 'multi_agent', 'computer_use']) assert.ok(args.includes(f) && args[args.indexOf(f) - 1] === '--disable', f)
+  for (const flag of ['--json', '--ignore-user-config', '--ignore-rules', '--skip-git-repo-check']) assert.ok(args.includes(flag), flag)
+  assert.ok(args.includes('sandbox_mode="read-only"') && args.includes('web_search="disabled"'))
+  assert.ok(args.includes('mcp_servers.latexwriter.default_tools_approval_mode="approve"'), 'edits wait for review in the app instead')
+  assert.equal(args[args.indexOf('-m') + 1], 'gpt-test')
+  assert.ok(args.includes(`mcp_servers.latexwriter.url="http://127.0.0.1:${PORT}/mcp?chat=${done.chat.activeId}"`))
+  const instructions = args.find((a) => a.startsWith('developer_instructions='))!
+  assert.match(JSON.parse(instructions.slice('developer_instructions='.length)), /^You are the writing assistant inside LaTeX Writer/)
+  assert.doesNotMatch(instructions, /Helper agents/, 'the helpers are Claude Code subagents')
+  assert.match(fs.readFileSync(path.join(HOME, 'codex-stdin.txt'), 'utf8'), /Earlier in this chat[\s\S]*User: Remember: the deadline is Friday[\s\S]*What is in main\.tex\?$/)
+  assert.doesNotMatch(fs.readFileSync(path.join(HOME, 'codex-env.txt'), 'utf8'), /OPENAI_API_KEY|ANTHROPIC_API_KEY/)
+
+  // The next message continues the Codex session.
+  await host('POST', '/api/host/ai/send', { text: 'And the title?' })
+  await until(async () => !(await state()).chat.busy && (await state()).chat.messages.length === 6, 'the second Codex turn')
+  const args2 = fs.readFileSync(path.join(HOME, 'codex-args.txt'), 'utf8').split('\n')
+  assert.deepEqual([args2[0], args2[1]], ['exec', 'resume'])
+  assert.deepEqual(args2.slice(-3, -1), ['01a1dfd8-0000-7000-8000-000000000001', '-'])
+  assert.ok(!args2.includes('-s') && !args2.includes('-C'), 'exec resume takes neither')
+  assert.equal(fs.readFileSync(path.join(HOME, 'codex-stdin.txt'), 'utf8'), 'And the title?')
+
+  // Back to Claude: its model choice was kept, and it gets a new session told what Codex said.
+  assert.equal((await host('POST', '/api/host/settings', { aiProvider: 'claude' })).json.ai.model, claudeModel)
+  await host('POST', '/api/host/ai/send', { text: 'Thanks' })
+  await until(async () => !(await state()).chat.busy && (await state()).chat.messages.length === 8, 'back on Claude')
+  const cargs = fs.readFileSync(path.join(HOME, 'cli-args.txt'), 'utf8').split('\n')
+  assert.ok(!cargs.includes('--resume'))
+  assert.match(fs.readFileSync(path.join(HOME, 'cli-stdin.txt'), 'utf8'), /Assistant: Looking\.[\s\S]*Done from Codex\./)
+
+  // An agent that is not installed cannot be chosen. (On a Mac with the ChatGPT app, Codex is
+  // still found there once the stand-in is gone; then it can be chosen, and the test goes back.)
+  fs.rmSync(path.join(bin, 'codex'))
+  const after = (await host('POST', '/api/host/ai/detect', {})).json.ai.providers[1]
+  assert.equal((await host('POST', '/api/host/settings', { aiProvider: 'codex' })).status, after.available ? 200 : 404)
+  await host('POST', '/api/host/settings', { aiProvider: 'claude' })
+  assert.equal((await state()).ai.provider, 'claude')
+  await host('POST', '/api/host/ai/reset', {})
+  delete process.env.OPENAI_API_KEY
+})
+
+test('leaving a project while the assistant works in it asks first', async () => {
+  // A stand-in that takes its time, so the assistant is still busy.
+  const cli = path.join(HOME, 'bin', 'claude')
+  const original = fs.readFileSync(cli, 'utf8')
+  fs.writeFileSync(cli, '#!/bin/bash\ncat > /dev/null\nsleep 30\n', { mode: 0o755 })
+  const state = async (): Promise<any> => (await host('GET', '/api/host/ai/state')).json
+  try {
+    await host('POST', '/api/host/ai/send', { text: 'Take your time' })
+    await until(async () => (await state()).chat.busy, 'the assistant to be busy')
+    for (const [url, b] of [
+      ['/api/host/project/close', {}],
+      ['/api/host/project/create', { workspace: WORKSPACE, name: 'Not now', template: 'blank' }],
+      ['/api/host/project/open', { path: WORKSPACE, workspace: WORKSPACE }],
+    ] as const) {
+      const res = await host('POST', url, b)
+      assert.equal(res.status, 409, url)
+      assert.equal(res.json.code, 'assistant-busy', url)
+      assert.match(res.json.error, /^The assistant is still working in "Test: Project"\. Leaving the project stops it\.$/)
+    }
+    assert.ok(!fs.existsSync(path.join(WORKSPACE, 'Not now')), 'nothing was created')
+    assert.equal(currentProject()?.root, fs.realpathSync(projectDir), 'still in the project')
+    // Reopening the project that is already open is not leaving it.
+    assert.equal((await host('POST', '/api/host/project/open', { path: projectDir, workspace: WORKSPACE })).status, 200)
+  } finally {
+    await host('POST', '/api/host/ai/stop', {})
+    await until(async () => !(await state()).chat.busy, 'the assistant to stop')
+    fs.writeFileSync(cli, original, { mode: 0o755 })
+    await host('POST', '/api/host/ai/reset', {})
+  }
+})
+
+test('a turn cut off by closing the app is picked up again when the assistant is opened', async () => {
+  const { AiChat } = await import('../server/ai.ts')
+  const root = fs.mkdtempSync(path.join(HOME, 'resume-'))
+  fs.mkdirSync(path.join(root, '.latexwriter'))
+  const session = '22222222-2222-2222-2222-222222222222'
+  const msg = (role: string, text: string) => ({ id: `${role}-${text}`, role, parts: [{ kind: 'text', text }], t: Date.now() })
+  const write = (chat: object): void => fs.writeFileSync(path.join(root, '.latexwriter', 'ai-chat.json'), JSON.stringify({ active: chat, archive: [] }))
+  write({ id: 'c1', sessionId: session, interrupted: true, messages: [msg('user', 'Rewrite the intro'), msg('assistant', 'Working on it')] })
+
+  const chat = new AiChat({ root, overview: () => 'Project "Resume".' })
+  chat.resumeInterrupted({ provider: 'claude', model: 'sonnet', effort: 'low' })
+  await until(() => !chat.busy && chat.messages.length === 3, 'the interrupted turn to be picked up')
+  assert.equal(chat.messages[1].error, 'Interrupted.')
+  assert.match(chat.messages[2].parts.map((p: any) => p.text ?? '').join(''), /stand-in/)
+  const args = fs.readFileSync(path.join(HOME, 'cli-args.txt'), 'utf8').split('\n')
+  assert.equal(args[args.indexOf('--resume') + 1], session, 'continues the same conversation')
+  assert.match(fs.readFileSync(path.join(HOME, 'cli-stdin.txt'), 'utf8'), /cut off/)
+  // Once finished it is not started again.
+  chat.resumeInterrupted({ provider: 'claude', model: 'sonnet', effort: 'low' })
+  assert.equal(chat.busy, false)
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, '.latexwriter', 'ai-chat.json'), 'utf8')).active.interrupted, false)
+
+  // A user pressing Stop is not an interruption, and neither is a turn that keeps dying.
+  write({ id: 'c2', sessionId: session, interrupted: true, attempts: 2, messages: [msg('user', 'x'), msg('assistant', 'y')] })
+  const stuck = new AiChat({ root, overview: () => '' })
+  stuck.resumeInterrupted({ provider: 'claude', model: 'sonnet', effort: 'low' })
+  assert.equal(stuck.busy, false)
+  assert.equal(stuck.messages.length, 2)
+  chat.dispose()
+  stuck.dispose()
+})
+
 test('closing the project flushes edits and snapshots', async () => {
   const [a] = editors
   a.text.insert(0, '% last words\n')
   await sleep(100)
   const project = currentProject()!
+  // The open project is remembered, so a server started again with --reopen can open it again.
+  const savedConfig = (): any => JSON.parse(fs.readFileSync(path.join(HOME, 'Library/Application Support/LaTeXWriter/config.json'), 'utf8'))
+  assert.equal(savedConfig().openProject, fs.realpathSync(projectDir))
   assert.equal((await host('POST', '/api/host/project/close', {})).status, 200)
+  assert.equal(savedConfig().openProject, null, 'closing it on purpose forgets it')
   assert.ok(fs.readFileSync(path.join(projectDir, 'main.tex'), 'utf8').startsWith('% last words'))
   assert.equal(currentProject(), null)
   assert.equal(project.history.list('main.tex')[0].reason, 'auto')
   assert.equal((await host('GET', '/api/project/tree')).status, 409)
+})
+
+test('an agent stays with its project when another project is opened in the app', async () => {
+  assert.equal((await host('POST', '/api/host/project/open', { path: projectDir, workspace: WORKSPACE })).status, 200)
+  const call = async (name: string, args: Record<string, unknown>, headers: Record<string, string> = {}, query = ''): Promise<any> => {
+    const res = await fetch(`${HOST}/mcp${query}`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }) })
+    return (await res.json()).result
+  }
+  // An MCP client gets a session id when it connects, and sends it back with every call.
+  const init = await fetch(`${HOST}/mcp`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '1' } } }) })
+  const session = init.headers.get('mcp-session-id')!
+  assert.match(session, /^[0-9a-f-]{36}$/)
+  const s = { 'Mcp-Session-Id': session }
+  assert.match((await call('project_info', {}, s)).content[0].text, /^Project: Test: Project/)
+
+  // The user opens another project: the session's next call does nothing and says why.
+  assert.equal((await host('POST', '/api/host/project/create', { workspace: WORKSPACE, name: 'Other One', template: 'blank' })).status, 200)
+  const refused = await call('edit_file', { path: 'main.tex', edits: [{ old_text: 'x', new_text: 'y' }] }, s)
+  assert.equal(refused.isError, true)
+  assert.match(refused.content[0].text, /^Stop: the project open in LaTeX Writer changed from "Test Project" to "Other One"/)
+  assert.equal((await call('read_file', { path: 'main.tex' }, s)).isError, true)
+  // Only when told to, it moves to the project that is open now.
+  assert.match((await call('project_info', { switch: true }, s)).content[0].text, /^Project: Other One/)
+  assert.equal((await call('read_file', { path: 'main.tex' }, s)).isError, undefined)
+  // A client without a session id keeps the old behaviour: it works on whatever is open.
+  assert.match((await call('project_info', {})).content[0].text, /^Project: Other One/)
+  // The chat inside the app belongs to one project: a call for a chat of another project is refused.
+  const foreign = await call('read_file', { path: 'main.tex' }, {}, '?chat=a-chat-of-another-project')
+  assert.equal(foreign.isError, true)
+  assert.match(foreign.content[0].text, /^Stop: this conversation belongs to another project/)
+
+  await host('POST', '/api/host/project/close', {})
+  fs.rmSync(path.join(WORKSPACE, 'Other One'), { recursive: true })
 })
 
 test('renaming the folder of an open project closes it cleanly instead of breaking', async () => {

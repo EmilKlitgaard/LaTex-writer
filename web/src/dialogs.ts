@@ -1,4 +1,4 @@
-import { api, q, type Person, type Sharing, type Snapshot, type TreeNode } from './api.ts'
+import { api, ApiError, q, type AiSettings, type Person, type Sharing, type Snapshot, type TreeNode } from './api.ts'
 import { app, applyFontSize, applyTheme, fontSize, themeMode, type ThemeMode } from './app.ts'
 import { clear, confirmDialog, copyText, h, icon, iconButton, openModal, timeAgo, toast } from './dom.ts'
 
@@ -118,20 +118,70 @@ export function initials(name: string): string {
   return ((parts[0]?.[0] ?? '?') + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase()
 }
 
+/**
+ * Runs a call that leaves the open project (back to the projects, opening or creating another,
+ * moving it to the Trash). If the assistant is working in it, says what leaving does and asks
+ * first; on yes the call is repeated with force. Returns null if the user stayed.
+ */
+export async function leaveProject<T>(call: (force: boolean) => Promise<T>): Promise<T | null> {
+  try {
+    return await call(false)
+  } catch (err) {
+    if (!(err instanceof ApiError) || err.code !== 'assistant-busy') throw err
+    const ok = await confirmDialog({
+      title: 'Stop the assistant?',
+      message: `${err.message} What it has changed so far stays in the list for your review, and it picks the request up again the next time you open the assistant in this project.`,
+      confirmLabel: 'Leave and stop it',
+      danger: true,
+    })
+    return ok ? call(true) : null
+  }
+}
+
 // ---- settings --------------------------------------------------------------------------
 
 export function openSettingsDialog(opts: { texFiles: string[]; onLeave: () => void }): void {
   const m = openModal({ title: 'Settings' })
   const isHost = app.user?.role === 'host'
 
-  const theme = h('select', { class: 'input', onchange: () => applyTheme(theme.value as ThemeMode) },
-    ...(['system', 'light', 'dark'] as const).map((v) => h('option', { value: v, selected: themeMode() === v }, v === 'system' ? 'Match system' : v === 'light' ? 'Light' : 'Dark')))
+  // Theme: a three-way switch. Auto follows the Mac's appearance and changes with it.
+  const THEMES: { mode: ThemeMode; label: string; icon: string; title: string }[] = [
+    { mode: 'system', label: 'Auto', icon: 'contrast', title: 'Follow the appearance of this Mac (light by day, dark at night if it is set to Auto)' },
+    { mode: 'light', label: 'Light', icon: 'sun', title: 'Always light' },
+    { mode: 'dark', label: 'Dark', icon: 'moon', title: 'Always dark' },
+  ]
+  const theme = h('div', { class: 'segmented', role: 'radiogroup', 'aria-label': 'Theme' })
+  const renderTheme = (): void => {
+    clear(theme)
+    const current = themeMode()
+    for (const t of THEMES) {
+      const on = t.mode === current
+      theme.append(h('button', {
+        class: `segment ${on ? 'active' : ''}`, type: 'button', role: 'radio', 'aria-checked': String(on), tabindex: on ? '0' : '-1', title: t.title,
+        onclick: () => {
+          applyTheme(t.mode)
+          renderTheme()
+          ;(theme.querySelector('.segment.active') as HTMLElement | null)?.focus()
+        },
+      }, icon(t.icon, 14), t.label))
+    }
+  }
+  // Arrow keys move between the three, like any radio group.
+  theme.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
+    e.preventDefault()
+    const i = THEMES.findIndex((t) => t.mode === themeMode())
+    applyTheme(THEMES[(i + (e.key === 'ArrowRight' ? 1 : THEMES.length - 1)) % THEMES.length].mode)
+    renderTheme()
+    ;(theme.querySelector('.segment.active') as HTMLElement | null)?.focus()
+  })
+  renderTheme()
   const size = h('select', { class: 'input', onchange: () => applyFontSize(Number(size.value)) },
     ...[11, 12, 13, 14, 15, 16, 18, 20].map((n) => h('option', { value: String(n), selected: fontSize() === n }, `${n} px`)))
 
   m.body.append(h('div', { class: 'section' },
     h('h3', null, 'Appearance'),
-    h('label', { class: 'field' }, h('span', null, 'Theme'), theme),
+    h('div', { class: 'field' }, h('span', null, 'Theme'), theme),
     h('label', { class: 'field' }, h('span', null, 'Editor text size'), size),
   ))
 
@@ -164,19 +214,60 @@ export function openSettingsDialog(opts: { texFiles: string[]; onLeave: () => vo
         toast((err as Error).message, 'error')
       }
     } })
-    const command = `claude mcp add --transport http latexwriter http://localhost:${location.port || '4173'}/mcp`
+    // Which agent runs the chat: every one this app knows, those not found on this Mac greyed out.
+    const choice = h('select', { class: 'input', 'aria-label': 'Assistant' })
+    const note = h('span', { class: 'muted block' })
+    const commands = h('div', { class: 'ai-mcp-commands' })
+    const render = (a: AiSettings): void => {
+      clear(choice)
+      for (const p of a.providers) choice.append(h('option', { value: p.id, disabled: !p.available, selected: p.id === a.provider }, p.available ? p.name : `${p.name} (not found)`))
+      choice.value = a.provider
+      note.textContent = a.available
+        ? `A chat in the right sidebar that can edit, compile and check the document. It runs ${a.providerName} on this Mac and uses ${a.plan}, not an API key. It can only use this app's tools.`
+        : `${a.providerName} was not found on this Mac. Install it and sign in, then choose Search again.`
+      clear(commands)
+      const found = a.providers.filter((p) => p.available)
+      if (!found.length) return
+      commands.append(h('p', { class: 'muted small' }, 'To use the same tools from a session outside the app, run this once in Terminal while LaTeX Writer is running:'))
+      for (const p of found) {
+        commands.append(h('div', { class: 'row url-row' },
+          h('code', { class: 'grow url small', title: p.name }, p.mcpCommand),
+          h('button', { class: 'btn btn-small', type: 'button', title: `Copy the command for ${p.name}`, onclick: async () => toast((await copyText(p.mcpCommand)) ? 'Command copied' : 'Could not copy. Select the text and copy it.', 'info') }, icon('copy'), ' Copy')))
+      }
+    }
+    choice.addEventListener('change', async () => {
+      try {
+        const res = await api<{ ai: AiSettings }>('POST', '/api/host/settings', { aiProvider: choice.value })
+        app.ai = res.ai
+        render(res.ai)
+      } catch (err) {
+        toast((err as Error).message, 'error')
+        if (app.ai) render(app.ai)
+      }
+    })
+    const search = h('button', { class: 'btn btn-small', type: 'button', title: 'Look again for Claude Code and Codex on this Mac', onclick: async () => {
+      search.disabled = true
+      try {
+        const res = await api<{ ai: AiSettings }>('POST', '/api/host/ai/detect', {})
+        app.ai = res.ai
+        render(res.ai)
+        const found = res.ai.providers.filter((p) => p.available).map((p) => p.name)
+        toast(found.length ? `Found: ${found.join(', ')}` : 'No assistant found on this Mac', 'info')
+      } catch (err) {
+        toast((err as Error).message, 'error')
+      } finally {
+        search.disabled = false
+      }
+    } }, icon('refresh'), ' Search again')
+    render(ai)
     m.body.append(h('div', { class: 'section' },
       h('h3', null, 'Assistant'),
       h('label', { class: 'row switch-row', for: 'ai-toggle' },
-        h('span', { class: 'grow' }, h('strong', null, 'AI assistant'),
-          h('span', { class: 'muted block' }, ai.available
-            ? 'A chat in the right sidebar that can edit, compile and check the document. It runs through Claude Code on this Mac and uses your Claude subscription, not an API key.'
-            : 'Needs Claude Code on this Mac, signed in with your Claude account. It was not found.')),
+        h('span', { class: 'grow' }, h('strong', null, 'AI assistant'), note),
         toggle),
-      h('p', { class: 'muted small' }, 'To use the same tools from the Claude app or a Claude Code session, run this once in Terminal while LaTeX Writer is running:'),
-      h('div', { class: 'row url-row' },
-        h('code', { class: 'grow url small' }, command),
-        h('button', { class: 'btn btn-small', type: 'button', onclick: async () => toast((await copyText(command)) ? 'Command copied' : 'Could not copy. Select the text and copy it.', 'info') }, icon('copy'), ' Copy')),
+      h('div', { class: 'field' }, h('span', null, 'Runs on'), h('div', { class: 'row' }, h('span', { class: 'grow' }, choice), search)),
+      h('p', { class: 'muted small' }, 'Switching keeps the chat: the other assistant is told the conversation so far. Models and effort are chosen under the message box.'),
+      commands,
     ))
   }
 

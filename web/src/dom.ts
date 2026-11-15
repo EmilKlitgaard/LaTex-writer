@@ -72,6 +72,9 @@ const ICONS: Record<string, string> = {
   sparkle: '<path d="M7 2.5 8.2 6 11.5 7 8.2 8.2 7 11.5 5.8 8.2 2.5 7 5.8 6z"/><path d="M12.2 10.5l.5 1.3 1.3.5-1.3.5-.5 1.3-.5-1.3-1.3-.5 1.3-.5z"/>',
   send: '<path d="M2.5 8 13.5 3l-3.2 10.2L8 9z"/><path d="M8 9l5.5-6"/>',
   stop: '<rect x="4.5" y="4.5" width="7" height="7" rx="1.2"/>',
+  sun: '<circle cx="8" cy="8" r="2.6"/><path d="M8 1.8v1.4M8 12.8v1.4M1.8 8h1.4M12.8 8h1.4M3.6 3.6l1 1M11.4 11.4l1 1M12.4 3.6l-1 1M4.6 11.4l-1 1"/>',
+  moon: '<path d="M13 9.8A5.5 5.5 0 0 1 6.2 3a5.5 5.5 0 1 0 6.8 6.8z"/>',
+  contrast: '<circle cx="8" cy="8" r="5.5"/><path d="M8 2.5v11a5.5 5.5 0 0 0 0-11z" fill="currentColor" stroke="none"/>',
 }
 
 export function icon(name: string, size = 16): SVGSVGElement {

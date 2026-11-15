@@ -6,14 +6,23 @@ The full design is in [SPEC.md](SPEC.md).
 
 ## Start it
 
-Two ways, same result:
+Three ways, all running the same server, so projects, settings and chats are shared:
 
-- **`Start LaTeX Writer.command`** (in this folder): double-click. A Terminal window opens, the editor opens in your browser. Close the Terminal window or press Ctrl+C to stop.
-- **`LaTeX Writer.app`** (in `~/Applications`): a Dock app with no Terminal window. Quit it from the Dock to stop. Click the Dock icon to bring the editor back. Rebuild it with `./scripts/make-app.sh` if you move this folder.
+- **`LaTeX Writer.app`** (in `~/Applications`): its own Mac window, no browser. It starts the server, or uses one that already runs. Quitting it stops the server it started, and the server also stops if the app crashes. File › Open in Browser (⇧⌘O) shows the same editor in your browser.
+- **`LaTeX Writer Web.app`** (in `~/Applications`): the editor in your browser, with no Terminal window. Quit it from the Dock to stop. Click the Dock icon to bring the editor back.
+- **`Start LaTeX Writer.command`** (in this folder): double-click. A Terminal window opens and the editor opens in your browser. Close the Terminal window or press Ctrl+C to stop.
+
+While either app is open it keeps a server running. If the server it uses goes away, for example because you quit the other app or it crashed, it starts a new one within a few seconds. That server opens the same project again, and the editor reconnects by itself; anything typed while it was disconnected may be lost, as the banner says. A server that keeps stopping is given up after a few tries, with its log shown. The Terminal way (`Start LaTeX Writer.command`) does not do this.
+
+Build or rebuild both apps by double-clicking **`Build apps.command`** (or `./scripts/make-app.sh`, optionally with a target folder). Do it again after moving this folder or changing `scripts/app/main.swift`. Changes to the editor itself need no rebuild. The native app needs the Xcode Command Line Tools (`xcode-select --install`); without them only LaTeX Writer Web is built.
 
 The first start installs dependencies and builds the interface, which takes a little while. Later starts are quick.
 
-The address is `http://localhost:4173` (the next free port is used if that one is taken).
+The address is `http://localhost:4173` (the next free port is used if another program has that one).
+
+The compile status in the top bar (the error count, or the time of a clean compile) shows and hides the Problems list under the PDF. In the Editor layout it switches to Split first and opens the list, since the list lives in the PDF pane.
+
+**Share** in the top bar saves the PDF to Downloads (on a guest's device: downloads it), downloads the project as a .zip, and opens **Share on your network…**. The theme is a three-way switch in Settings: **Auto** follows the Mac's light or dark appearance, or choose **Light** or **Dark**.
 
 ## Requirements
 
@@ -34,8 +43,9 @@ server/            the local server (TypeScript, run directly by Node)
   workspace.ts     folder picker, project list, templates, move to Trash
 web/               the browser interface (TypeScript, bundled by Vite)
 test/              unit tests and an end-to-end test of the server
-scripts/launch.sh  used by both launchers
-scripts/make-app.sh  builds the Dock app
+scripts/launch.sh  used by all three ways of starting
+scripts/make-app.sh  builds LaTeX Writer.app and LaTeX Writer Web.app
+scripts/app/         the native app (main.swift: a WebKit window around the server)
 ```
 
 Nothing heavy lives in this (iCloud) folder. Dependencies, the built interface, settings, logs and LaTeX build files are in `~/Library/Application Support/LaTeXWriter/`. `node_modules` here is only a link to that place.
@@ -62,13 +72,21 @@ Start the server without opening a browser:
 node server/index.ts --no-open
 ```
 
+Other flags: `--reopen` opens the project that was open last (the apps use it when they start a server again), and `--exit-with-parent` stops the server when its stdin closes (the native app passes a pipe). `LATEXWRITER_HOME` and `LATEXWRITER_PORT` move the data folder and the port, for trying things without touching your own setup:
+
+```bash
+LATEXWRITER_HOME=/tmp/lw-try LATEXWRITER_PORT=4400 node server/index.ts --no-open
+```
+
 To add a dependency, install it in `~/Library/Application Support/LaTeXWriter/deps` and copy `package.json` and `package-lock.json` back here. Do not run `npm install` in this folder: it would replace the link with a real `node_modules` that iCloud then tries to sync.
 
 ## The assistant (optional add-on)
 
 A chat in a right-hand sidebar, opened with the **Assistant** button. It can read and search the sources, edit them, compile, and check the PDF. Turn it off in Settings and nothing of it remains: no button, no chat, no tool endpoint.
 
-- **No API key.** Each message runs the Claude Code CLI already installed on this Mac (`claude -p`), which is signed in with your Claude subscription. Usage counts against that plan; the sidebar shows how much of the 5-hour limit is used.
+- **Claude Code or Codex, no API key.** Each message runs a coding agent already installed and signed in on this Mac: Claude Code (`claude -p`, your Claude subscription) or Codex (`codex exec`, your ChatGPT plan). Choose it in Settings › Assistant › **Runs on**. The list shows what was found on this Mac, and **Search again** looks again after you install one. Codex is found on the PATH, inside the ChatGPT or Codex app, or inside the ChatGPT extension for VS Code. The model menu under the message box lists the chosen agent's models (Codex's come from its own catalog), and each agent remembers its own model. Switching mid-chat keeps the chat: the other agent starts a new session and is told the conversation so far. With Claude Code the sidebar also shows how much of the 5-hour limit is used.
+- **Only this app's tools, whichever agent.** Claude Code runs with no built-in tools except starting helpers. Codex runs with its shell, web search, apps, plugins and your own Codex config and rules switched off, and in a read-only sandbox in an empty folder, so it too can only act through this app's tools. This app's tools need no approval in Codex, since every edit already waits for your review here.
+- **One project at a time.** The assistant works in the project that is open. Leaving that project while it works (going back to the projects, or opening or creating another, from any window) asks first. Leaving stops it, but what it changed stays in the list for your review, and it picks the request up again the next time you open the assistant in that project. A tool call that still arrives for the old project is refused, and a Claude or Codex session outside the app stays with the project it started on. If you open another project, its next call stops and says so; it only moves to the new project when you tell it to.
 - **Changes wait for you.** An edit by the assistant goes into the document at once, and the text from before is kept as a backup in `.latexwriter/review/`. Each change is listed with Accept and Decline; the editor tints the changed lines, and the PDF pane gets a Before / After switch. Accepting keeps the change, declining puts the old text back, and when nothing is pending the backup is deleted.
 - **Kept cheap.** Every step of a conversation re-sends all of it, so the tools are built to need few steps and small answers:
   - `edit_file` takes several edits in one call and compiles afterwards, returning errors with the offending source line.
@@ -76,18 +94,31 @@ A chat in a right-hand sidebar, opened with the **Assistant** button. It can rea
   - `read_pdf_text` can search instead of returning whole pages; `write_file` refuses to rewrite long files.
   - Claude Code runs with no built-in tools except starting helpers, no skills, plugins or other MCP servers, a chosen effort level, and automatic compaction at 100k tokens. The sidebar shows the conversation size and suggests a new chat when it grows large.
 - **Helper agents.** The main assistant can hand work to three helpers that start with an empty context and return a short report, so their reading and page images never enter the main conversation: `reader` (Haiku, read-only), `layout-checker` (Haiku, read-only, the only one meant to look at pages), and `writer` (Sonnet, edits). Their steps appear indented under the helper in the chat.
-- **Also usable from the Claude app or a Claude Code session.** The tools are an MCP server at `http://localhost:4173/mcp`. Register it once (the command is also in Settings):
+- **Writing skills.** Type `/` in the chat for task recipes the assistant follows. They are Markdown files in `server/skills/`; add a file there to add a command.
+  - `/humanize [what]` rewrites text so it reads as written by a person.
+  - `/humanize-audit [what]` reports where text reads as AI-written, with quotes, line numbers and the fixes that matter most, without changing anything.
+  - `/humanize-draft <what, where>` writes new text with those choices made from the start.
+
+  With no target they work on the selection, else the section at the cursor. All three rest on one guide (`server/skills/humanize-guide.md`) built from StoryScope (Russell et al., COLM 2026). That paper found that AI text gives itself away mostly through structure and meaning, not wording: it over-explains its themes, conveys emotion through the body, tells one tidy linear thread, and stays vague about the outside world. The guide adapts those findings to non-fiction too. The assistant also loads a skill by itself (`use_skill`) when you ask for the same thing in your own words, and MCP clients see the skills as prompts.
+- **Other projects, with your permission.** On its own the assistant only sees the open project. When a task needs another project in the same folder ("set up exercise 2 like exercise 1"), it asks first: a card in the sidebar says which project and why, with **Allow for this project** and **Don't allow**. Access is read-only. The assistant can list, read and search that project and copy files from it with `copy_file`. Copies never overwrite, copied text files wait for review, and images are copied as they are. The permission belongs to the open project (`.latexwriter/access.json`) and shows as a chip under the message box; click its × to take it back.
+- **Attach files and folders.** The **+** in the message box opens a Finder dialog to add files or folders from anywhere on the Mac. The assistant may read them, read-only, in that chat only (each chip has a × to remove it). Helper agents can read what the main assistant may read, but only the main assistant can ask for access.
+- **Also usable from a Claude Code or Codex session.** The tools are an MCP server at `http://localhost:4173/mcp`. Register it once (Settings shows the commands for the agents found on this Mac):
 
 ```bash
 claude mcp add --transport http latexwriter http://localhost:4173/mcp
 ```
 
-Code: `server/mcp.ts` (the tools), `server/review.ts` (pending changes), `server/ai.ts` (runs the CLI), `server/pdfrender.ts` (PDF to text and images), `web/src/aipanel.ts` (the sidebar).
+```bash
+codex mcp add latexwriter --url http://localhost:4173/mcp
+```
+
+Code: `server/mcp.ts` (the tools), `server/access.ts` (other projects and attachments), `server/skills.ts` and `server/skills/` (the writing skills), `server/review.ts` (pending changes), `server/ai.ts` (runs the agent), `server/providers.ts` (finds Claude Code and Codex, and their models), `server/pdfrender.ts` (PDF to text and images), `web/src/aipanel.ts` (the sidebar).
 
 ## Security notes
 
 - The server listens on `127.0.0.1` only. With "Show on LAN" on, it also listens on the Mac's network address, and guests must enter the passcode.
 - Whoever connects from this Mac itself is the host. Guests can edit, manage files, compile and restore versions in the project that is open, and nothing else.
+- The assistant reads outside the open project only what you allow: another project after you answer its request (read-only, until you remove it), and files you attach to a chat (read-only, that chat only). It writes only to the open project.
 - LAN traffic is plain HTTP. The passcode keeps casual visitors out; it is not strong security.
 - The assistant and its tool endpoint are host-only and answer on `127.0.0.1` only; requests from web pages are refused. Guests cannot use them.
 - LaTeX runs without shell escape, ignores `latexmkrc` files, and may only read and write inside its build folder. LuaLaTeX is refused while sharing is on, because Lua code in a document can read and write any file.
