@@ -48,7 +48,7 @@ const ICONS: Record<string, string> = {
   upload: '<path d="M8 10.5V3m0 0L5 6m3-3 3 3M3 10.5v2h10v-2"/>',
   download: '<path d="M8 3v7.5m0 0-3-3m3 3 3-3M3 12.5h10"/>',
   trash: '<path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.5 8.5h6l.5-8.5"/>',
-  settings: '<path d="M6.8 1.8h2.4l.4 1.7 1.2.7 1.7-.5 1.2 2.1-1.3 1.2v1.4l1.3 1.2-1.2 2.1-1.7-.5-1.2.7-.4 1.7H6.8l-.4-1.7-1.2-.7-1.7.5-1.2-2.1 1.3-1.2V7.3L2.3 6.1l1.2-2.1 1.7.5 1.2-.7z"/><circle cx="8" cy="8" r="2"/>',
+  settings: '<path d="M7.12 3.38 7.11 1.76h1.78l-.01 1.62 1.76.73 1.14-1.15 1.26 1.26-1.15 1.14.73 1.76 1.62-.01v1.78l-1.62-.01-.73 1.76 1.15 1.14-1.26 1.26-1.14-1.15-1.76.73.01 1.62H7.11l.01-1.62-1.76-.73-1.14 1.15-1.26-1.26 1.15-1.14-.73-1.76-1.62.01V7.11l1.62.01.73-1.76-1.15-1.14 1.26-1.26 1.14 1.15z"/><circle cx="8" cy="8" r="2"/>',
   share: '<circle cx="4" cy="8" r="1.7"/><circle cx="11.5" cy="4" r="1.7"/><circle cx="11.5" cy="12" r="1.7"/><path d="m5.5 7.2 4.5-2.4M5.5 8.8l4.5 2.4"/>',
   history: '<path d="M2.5 8a5.5 5.5 0 1 0 1.7-4"/><path d="M2.5 3v2.5H5M8 5v3.2l2 1.3"/>',
   refresh: '<path d="M13 8a5 5 0 1 1-1.5-3.5"/><path d="M13 3v2.5h-2.5"/>',
@@ -260,6 +260,43 @@ export async function copyText(text: string): Promise<boolean> {
   } catch {}
   ta.remove()
   return ok
+}
+
+/**
+ * A copy button that shows it worked: for a moment it turns into a check mark and "Copied".
+ * label: the button text ('' for just the icon, where space is tight); what: for its tooltip.
+ */
+export function copyButton(get: () => string, opts: { label?: string; what?: string } = {}): HTMLButtonElement {
+  const label = opts.label ?? 'Copy'
+  const title = `Copy ${opts.what ?? 'this'}`
+  const btn = h('button', { class: `copy-btn ${label ? '' : 'icon-only'}`, type: 'button', title, 'aria-label': title }) as HTMLButtonElement
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const show = (copied: boolean): void => {
+    clear(btn)
+    btn.append(icon(copied ? 'check' : 'copy', 13), label ? (copied ? 'Copied' : label) : '')
+    btn.classList.toggle('copied', copied)
+    btn.setAttribute('aria-label', copied ? 'Copied' : title)
+  }
+  show(false)
+  btn.addEventListener('click', async (e) => {
+    e.stopPropagation()
+    if (!(await copyText(get()))) return toast('Could not copy. Select the text and copy it.', 'error')
+    show(true)
+    if (timer) clearTimeout(timer)
+    timer = setTimeout(() => show(false), 1500)
+  })
+  return btn
+}
+
+/**
+ * Text to copy, shown as code with its copy button inside: at the right end of a one-line field,
+ * or in the top-right corner of a block (several lines, or long text that wraps).
+ */
+export function copyBox(text: string, opts: { what?: string; block?: boolean; class?: string } = {}): HTMLElement {
+  const block = opts.block ?? (text.includes('\n') || text.length > 90)
+  return h('div', { class: `copy-box ${block ? 'block' : 'line'} ${opts.class ?? ''}`, onclick: (e: Event) => e.stopPropagation() },
+    h(block ? 'pre' : 'code', { class: 'copy-text' }, text),
+    copyButton(() => text, { what: opts.what }))
 }
 
 export function store(key: string, value?: string | null): string | null {

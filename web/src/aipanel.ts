@@ -677,12 +677,82 @@ export class AiPanel {
     }
   }
 
+  /** True while the tray slides up or down. */
+  private reviewAnimating = false
+
+  /**
+   * Opens the changes tray to fill the whole chat area, or closes it to its header, sliding.
+   * The chat above shrinks or grows with it, so nothing jumps. Without animation when the Mac
+   * asks for reduced motion.
+   */
+  private toggleReview(): void {
+    if (this.reviewAnimating) return
+    const el = this.reviewEl
+    const pane = this.element
+    const open = !this.reviewOpen
+    const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    const done = (): void => {
+      this.reviewAnimating = false
+      el.style.height = ''
+      el.style.flex = ''
+      el.style.transition = ''
+      if (!open) {
+        this.reviewOpen = false
+        this.renderReview()
+      } else {
+        pane.classList.add('review-open')
+      }
+    }
+    if (reduce) {
+      this.reviewOpen = open
+      pane.classList.toggle('review-open', open)
+      pane.classList.toggle('review-flat', open)
+      this.renderReview()
+      return
+    }
+    this.reviewAnimating = true
+    const from = el.getBoundingClientRect().height
+    let to: number
+    if (open) {
+      // Grow by the height the chat has now: the chat shrinks to nothing as the tray takes its place.
+      to = from + this.listEl.getBoundingClientRect().height
+      this.reviewOpen = true
+      this.renderReview()
+      pane.classList.add('review-flat')
+    } else {
+      pane.classList.remove('review-open', 'review-flat')
+      const head = el.querySelector('.ai-review-head') as HTMLElement | null
+      to = (head?.getBoundingClientRect().height ?? 0) + 1
+      el.classList.remove('open')
+      el.querySelector('.ai-review-toggle')?.setAttribute('aria-expanded', 'false')
+    }
+    el.style.flex = 'none'
+    el.style.height = `${from}px`
+    void el.offsetHeight
+    el.style.transition = 'height 0.28s cubic-bezier(0.2, 0.8, 0.2, 1)'
+    el.style.height = `${to}px`
+    let finished = false
+    // Only the tray's own height transition ends the slide: the chevron's turn ends earlier and bubbles up.
+    const onEnd = (e: TransitionEvent): void => {
+      if (e.target === el && e.propertyName === 'height') finish()
+    }
+    const finish = (): void => {
+      if (finished) return
+      finished = true
+      el.removeEventListener('transitionend', onEnd)
+      done()
+    }
+    el.addEventListener('transitionend', onEnd)
+    setTimeout(finish, 450)
+  }
+
   private renderReview(): void {
     clear(this.reviewEl)
     const r = this.review
     this.reviewEl.hidden = r.changeCount === 0
     if (!r.changeCount) {
       this.reviewOpen = false
+      this.element.classList.remove('review-open', 'review-flat')
       return
     }
     let added = 0
@@ -693,23 +763,25 @@ export class AiPanel {
     }
     const files = r.files.length
     this.reviewEl.classList.toggle('open', this.reviewOpen)
+    // Two rows: what changed, across the full width, then the two decisions side by side.
     this.reviewEl.append(h('div', { class: 'ai-review-head' },
       h('button', {
-        class: 'ai-review-toggle grow', type: 'button', 'aria-expanded': String(this.reviewOpen),
+        class: 'ai-review-toggle', type: 'button', 'aria-expanded': String(this.reviewOpen),
         title: this.reviewOpen ? 'Hide the changes' : 'Show the changes',
-        onclick: () => {
-          this.reviewOpen = !this.reviewOpen
-          this.renderReview()
-        },
+        onclick: () => this.toggleReview(),
       },
       icon('chevron', 14),
-      h('strong', null, `${files} file${files === 1 ? '' : 's'} changed`),
-      h('span', { class: 'ai-review-lines' }, h('span', { class: 'ai-lines-added' }, `+${added}`), ' ', h('span', { class: 'ai-lines-removed' }, `−${removed}`))),
-      h('button', { class: 'btn btn-small', type: 'button', onclick: async () => {
-        const ok = r.changeCount < 2 || await confirmDialog({ title: 'Decline all changes', message: `Undo all ${r.changeCount} pending changes and put the earlier text back?`, confirmLabel: 'Decline all', danger: true })
-        if (ok) void this.decide('decline')
-      } }, 'Decline all'),
-      h('button', { class: 'btn btn-small btn-primary', type: 'button', onclick: () => void this.decide('accept') }, 'Accept all'),
+      h('span', { class: 'ai-review-title' },
+        h('strong', null, `${files} file${files === 1 ? '' : 's'} changed`),
+        h('span', { class: 'ai-review-count' }, `${r.changeCount} change${r.changeCount === 1 ? '' : 's'}`)),
+      h('span', { class: 'ai-review-lines', title: `${added} line${added === 1 ? '' : 's'} added, ${removed} removed` },
+        h('span', { class: 'ai-lines-added' }, `+${added}`), h('span', { class: 'ai-lines-removed' }, `−${removed}`))),
+      h('div', { class: 'ai-review-actions' },
+        h('button', { class: 'btn btn-small', type: 'button', onclick: async () => {
+          const ok = r.changeCount < 2 || await confirmDialog({ title: 'Decline all changes', message: `Undo all ${r.changeCount} pending changes and put the earlier text back?`, confirmLabel: 'Decline all', danger: true })
+          if (ok) void this.decide('decline')
+        } }, 'Decline all'),
+        h('button', { class: 'btn btn-small btn-primary', type: 'button', onclick: () => void this.decide('accept') }, 'Accept all')),
     ))
     if (!this.reviewOpen) return
     const list = h('div', { class: 'ai-review-list' })

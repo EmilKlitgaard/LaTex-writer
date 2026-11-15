@@ -289,7 +289,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         window.setFrameAutosaveName("MainWindow")
         window.tabbingMode = .disallowed
         window.makeKeyAndOrderFront(nil)
-        showMessage("Starting LaTeX Writer…", detail: "")
+        showLoading(LoadingPhase.starting)
     }
 
     /// Uses a server that already runs, or starts one.
@@ -302,6 +302,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     }
 
     func open(_ url: URL) {
+        loadingShown = false
+        currentPhase = nil
         baseURL = url
         webView.load(URLRequest(url: url))
     }
@@ -316,12 +318,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             recovering = false
             return showMessage("LaTeX Writer could not start", detail: error.localizedDescription)
         }
-        var lastShown = ""
-        server.waitUntilReady(progress: { [weak self] tail in
-            // The first start installs dependencies and builds the interface: show how it goes.
-            guard let self, !self.recovering, tail != lastShown, !tail.isEmpty else { return }
-            lastShown = tail
-            self.showMessage("Starting LaTeX Writer…", detail: tail)
+        server.waitUntilReady(progress: { [weak self] _ in
+            // The first start installs dependencies and builds the interface: say which, in plain words.
+            // The log itself is shown only when starting fails.
+            guard let self, !self.recovering else { return }
+            self.showLoading(LoadingPhase.from(log: logText()))
         }, done: { [weak self] url in
             guard let self else { return }
             if let url {
@@ -340,7 +341,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         recoveries = []
         window.subtitle = ""
         server.stop()
-        showMessage("Restarting LaTeX Writer…", detail: "")
+        showLoading(LoadingPhase.restarting)
         connect(reopen: true)
     }
 
@@ -375,8 +376,71 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         }
     }
 
-    /// A plain status page in the editor's colours, for "starting" and error states.
+    /// The phase shown while the server starts: what it is doing, in general terms.
+    struct LoadingPhase: Equatable {
+        let title: String
+        let note: String
+        static let starting = LoadingPhase(title: "Starting LaTeX Writer", note: "")
+        static let restarting = LoadingPhase(title: "Restarting LaTeX Writer", note: "")
+        static let installing = LoadingPhase(title: "Installing what LaTeX Writer needs", note: "This happens on the first start and after an update, and takes a minute or two.")
+        static let building = LoadingPhase(title: "Preparing the editor", note: "Almost there.")
+
+        /// Reads launch.sh's output for the step it is on; the latest step wins.
+        static func from(log: String) -> LoadingPhase {
+            let install = log.range(of: "Installing dependencies", options: .backwards)?.lowerBound
+            let build = log.range(of: "Building the interface", options: .backwards)?.lowerBound
+            switch (install, build) {
+            case let (i?, b?): return b > i ? .building : .installing
+            case (_?, nil): return .installing
+            case (nil, _?): return .building
+            default: return .starting
+            }
+        }
+    }
+
+    /// Whether the loading page is on screen, so a new phase only changes its text.
+    var loadingShown = false
+    var currentPhase: LoadingPhase?
+
+    /// A spinner and one line on what is happening; no log unless something goes wrong.
+    func showLoading(_ phase: LoadingPhase) {
+        guard phase != currentPhase || !loadingShown else { return }
+        currentPhase = phase
+        func js(_ s: String) -> String {
+            let data = try? JSONSerialization.data(withJSONObject: [s], options: [])
+            return String(data: data ?? Data("[\"\"]".utf8), encoding: .utf8).map { String($0.dropFirst().dropLast()) } ?? "\"\""
+        }
+        // Once the page is there only its text changes; while it is still loading, load it again.
+        if loadingShown && !webView.isLoading {
+            webView.evaluateJavaScript("document.getElementById('phase').textContent = \(js(phase.title + "…")); document.getElementById('note').textContent = \(js(phase.note))", completionHandler: nil)
+            return
+        }
+        func esc(_ s: String) -> String {
+            s.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;").replacingOccurrences(of: ">", with: "&gt;")
+        }
+        let html = """
+        <!doctype html><meta charset="utf-8"><style>
+        :root { color-scheme: light dark; --bg:#f7f8f7; --text:#1d2420; --muted:#5d6762; --track:#dfe3e1; --accent:#2f8f6b; }
+        @media (prefers-color-scheme: dark) { :root { --bg:#16191a; --text:#e3e7e5; --muted:#9aa4a0; --track:#2a3032; --accent:#4fb38c; } }
+        body { margin:0; height:100vh; display:grid; place-items:center; background:var(--bg); color:var(--text);
+               font: 14px -apple-system, BlinkMacSystemFont, sans-serif; -webkit-user-select:none; cursor:default; }
+        .box { display:flex; flex-direction:column; align-items:center; gap:14px; padding:24px; text-align:center; max-width:420px; }
+        .spinner { width:28px; height:28px; border-radius:50%; border:3px solid var(--track); border-top-color:var(--accent); animation: spin 0.9s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }
+        #phase { font-size:15px; font-weight:600; }
+        #note { color:var(--muted); font-size:13px; line-height:1.4; min-height:1.4em; }
+        </style><div class="box" role="status" aria-live="polite"><div class="spinner" aria-hidden="true"></div>
+        <div id="phase">\(esc(phase.title))…</div><div id="note">\(esc(phase.note))</div></div>
+        """
+        webView.loadHTMLString(html, baseURL: nil)
+        loadingShown = true
+    }
+
+    /// A plain status page in the editor's colours, for errors (with the log, where it explains them).
     func showMessage(_ title: String, detail: String) {
+        loadingShown = false
+        currentPhase = nil
         func esc(_ s: String) -> String {
             s.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;").replacingOccurrences(of: ">", with: "&gt;")
         }
