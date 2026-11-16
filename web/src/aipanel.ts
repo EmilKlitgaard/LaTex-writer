@@ -205,13 +205,17 @@ export class AiPanel {
       },
       onfocus: () => this.updateContext(),
       onblur: () => this.closeSlash(),
-      // A picture on the clipboard (a screenshot, an image copied from a page) goes with the message.
-      // Text wins when the clipboard has both, as it does when copying from Word or Pages.
+      // A picture on the clipboard (a screenshot, an image copied from a page or a file copied in
+      // Finder) goes with the message. Text wins when the clipboard has both, as it does when copying
+      // from Word or Pages, except when that text is only the file's name, as it is for a Finder copy.
       onpaste: (e: ClipboardEvent) => {
         const data = e.clipboardData
-        if (!data || data.getData('text/plain')) return
+        if (!data) return
         const files = [...data.files].filter((f) => f.type.startsWith('image/'))
         if (!files.length) return
+        const text = data.getData('text/plain').trim()
+        const names = new Set([...data.files].map((f) => f.name))
+        if (text && !text.split(/\r?\n/).every((line) => names.has(line.trim()) || /^file:\/\//.test(line.trim()))) return
         e.preventDefault()
         this.queueImages(files)
       },
