@@ -25,6 +25,7 @@ import { extensionOf, HttpError, isHiddenName, resolveInside, sanitizeFolderName
 import { closeProject, currentProject, openProject, rememberOpen, requireProject } from './project.ts'
 import { revoke } from './access.ts'
 import { browse, chooseFolderInFinder, chooseForAttachment, createProject, listWorkspace, makeFolder, trashProject } from './workspace.ts'
+import { openUrl, reveal } from './platform.ts'
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -538,7 +539,7 @@ export async function startServer(opts: { port?: number; strictPort?: boolean } 
     requireHost(req)
     const target = String(body(req).path ?? '')
     if (!path.isAbsolute(target) || !fs.existsSync(target)) throw new HttpError(404, 'Not found')
-    execFile('/usr/bin/open', ['-R', target])
+    reveal(target)
     return { ok: true }
   })
 
@@ -873,7 +874,7 @@ async function main(): Promise<void> {
   const cfgPort = DEFAULT_PORT
   const alreadyRunning = (): void => {
     console.log(`LaTeX Writer is already running on http://localhost:${cfgPort}`)
-    if (!noOpen) execFile('/usr/bin/open', [`http://localhost:${cfgPort}`])
+    if (!noOpen) openUrl(`http://localhost:${cfgPort}`)
     // Nothing should keep this process alive, but make sure of it.
     setTimeout(() => process.exit(0), 1000).unref()
   }
@@ -902,7 +903,7 @@ async function main(): Promise<void> {
   const url = `http://localhost:${server.port}`
   console.log(`\nLaTeX Writer is running on ${url}`)
   console.log('Keep this window open while you work. Press Ctrl+C or close the window to stop.\n')
-  if (!noOpen) execFile('/usr/bin/open', [url])
+  if (!noOpen) openUrl(url)
 
   let stopping = false
   const stop = (signal: string): void => {

@@ -1,6 +1,7 @@
 import { api, ApiError, q, type AiSettings, type Person, type Sharing, type Snapshot, type TreeNode } from './api.ts'
 import { app, applyFontSize, applyTheme, fontSize, themeMode, type ThemeMode } from './app.ts'
 import { clear, confirmDialog, copyBox, copyButton, h, icon, iconButton, openModal, timeAgo, toast } from './dom.ts'
+import { OS } from './app.ts'
 
 // ---- sharing (host) ------------------------------------------------------------------
 
@@ -151,7 +152,7 @@ export function openConnectDialog(): void {
   const copyRow = (text: string, what: string, block = false): HTMLElement => copyBox(text, { what, block })
   const withUrl = JSON.stringify({ mcpServers: { latexwriter: { url } } }, null, 2)
   const withCommand = JSON.stringify({ mcpServers: { latexwriter: { command: 'npx', args: ['-y', 'mcp-remote', url] } } }, null, 2)
-  const prompt = `Connect to LaTeX Writer, a LaTeX editor running on this Mac, through its MCP server (Model Context Protocol). Add an MCP server named "latexwriter" that uses the streamable HTTP transport at ${url}. It needs no authentication and only answers on this Mac while LaTeX Writer is running. If you can only start local commands, run it through mcp-remote instead: command "npx" with the arguments "-y", "mcp-remote", "${url}". Then call its project_info tool to check that it works, and follow the instructions the server sends: it works on the project that is open in the app, and your edits wait for my review there.`
+  const prompt = `Connect to LaTeX Writer, a LaTeX editor running on ${OS.computer}, through its MCP server (Model Context Protocol). Add an MCP server named "latexwriter" that uses the streamable HTTP transport at ${url}. It needs no authentication and only answers on this Mac while LaTeX Writer is running. If you can only start local commands, run it through mcp-remote instead: command "npx" with the arguments "-y", "mcp-remote", "${url}". Then call its project_info tool to check that it works, and follow the instructions the server sends: it works on the project that is open in the app, and your edits wait for my review there.`
   const found = ai.providers.filter((p) => p.available)
   // Whether the MCP server answers: it is switched with the AI assistant in Settings.
   const status = h('div', { class: 'mcp-status' })
@@ -184,7 +185,7 @@ export function openConnectDialog(): void {
     h('p', null, 'LaTeX Writer\'s tools (read, search, edit, compile, check the PDF) are an MCP server. Any AI app that supports MCP can use them on the project that is open here. Edits wait for your review, as with the built-in assistant.'),
     status,
     found.length ? h('div', { class: 'section' },
-      h('h3', null, 'Found on this Mac'),
+      h('h3', null, `Found on ${OS.computer}`),
       h('p', { class: 'muted small' }, 'Run once in Terminal while LaTeX Writer is running:'),
       ...found.map((p) => h('div', null, h('div', { class: 'small connect-label' }, p.name), copyRow(p.mcpCommand, 'the command')))) : null,
     h('div', { class: 'section' },
@@ -202,7 +203,7 @@ export function openConnectDialog(): void {
   ]
   snippets.append(...parts.slice(2).filter((x): x is HTMLElement => x !== null))
   m.body.append(parts[0]!, status, snippets,
-    h('p', { class: 'muted small' }, 'The address only works on this Mac and only while LaTeX Writer is running. Web pages cannot use it.'))
+    h('p', { class: 'muted small' }, `The address only works on ${OS.computer} and only while LaTeX Writer is running. Web pages cannot use it.`))
 }
 
 // ---- settings --------------------------------------------------------------------------
@@ -213,7 +214,7 @@ export function openSettingsDialog(opts: { texFiles: string[]; onLeave: () => vo
 
   // Theme: a three-way switch. Auto follows the Mac's appearance and changes with it.
   const THEMES: { mode: ThemeMode; label: string; icon: string; title: string }[] = [
-    { mode: 'system', label: 'Auto', icon: 'contrast', title: 'Follow the appearance of this Mac (light by day, dark at night if it is set to Auto)' },
+    { mode: 'system', label: 'Auto', icon: 'contrast', title: `Follow the appearance of ${OS.computer}` },
     { mode: 'light', label: 'Light', icon: 'sun', title: 'Always light' },
     { mode: 'dark', label: 'Dark', icon: 'moon', title: 'Always dark' },
   ]
@@ -290,8 +291,8 @@ export function openSettingsDialog(opts: { texFiles: string[]; onLeave: () => vo
       for (const p of a.providers) choice.append(h('option', { value: p.id, disabled: !p.available, selected: p.id === a.provider }, p.available ? p.name : `${p.name} (not found)`))
       choice.value = a.provider
       note.textContent = a.available
-        ? `A chat in the right sidebar that can edit, compile and check the document. It runs ${a.providerName} on this Mac and uses ${a.plan}, not an API key. It can only use this app's tools. Turning it off also turns off the MCP server that other AI apps connect to.`
-        : `${a.providerName} was not found on this Mac. Install it and sign in, then choose Search again.`
+        ? `A chat in the right sidebar that can edit, compile and check the document. It runs ${a.providerName} on ${OS.computer} and uses ${a.plan}, not an API key. It can only use this app's tools. Turning it off also turns off the MCP server that other AI apps connect to.`
+        : `${a.providerName} was not found on ${OS.computer}. Install it and sign in, then choose Search again.`
       clear(commands)
       commands.append(h('p', { class: 'muted small' },
         'Other AI apps can use the same tools: ',
@@ -308,14 +309,14 @@ export function openSettingsDialog(opts: { texFiles: string[]; onLeave: () => vo
         if (app.ai) render(app.ai)
       }
     })
-    const search = h('button', { class: 'btn btn-small', type: 'button', title: 'Look again for Claude Code and Codex on this Mac', onclick: async () => {
+    const search = h('button', { class: 'btn btn-small', type: 'button', title: `Look again for Claude Code and Codex on ${OS.computer}`, onclick: async () => {
       search.disabled = true
       try {
         const res = await api<{ ai: AiSettings }>('POST', '/api/host/ai/detect', {})
         app.ai = res.ai
         render(res.ai)
         const found = res.ai.providers.filter((p) => p.available).map((p) => p.name)
-        toast(found.length ? `Found: ${found.join(', ')}` : 'No assistant found on this Mac', 'info')
+        toast(found.length ? `Found: ${found.join(', ')}` : `No assistant found on ${OS.computer}`, 'info')
       } catch (err) {
         toast((err as Error).message, 'error')
       } finally {

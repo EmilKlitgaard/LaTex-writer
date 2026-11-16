@@ -9,7 +9,10 @@
 #   LaTeX-Writer-<version>.dmg   both apps and a link to Applications: drag them over
 #   LaTeX-Writer-<version>.zip   both apps; what install.sh downloads
 #   install.sh                   the one-line Terminal install (no "Open Anyway" step)
-#   SHA256SUMS.txt               checksums of the three, which install.sh checks
+#   LaTeX-Writer-<version>-Windows.zip
+#                                the same editor for Windows: the source with a start script
+#                                (scripts/windows), no app; it runs in the browser
+#   SHA256SUMS.txt               checksums of the files, which install.sh checks
 #
 # The apps are signed ad hoc, not notarized (that needs a paid Apple Developer account), so a
 # downloaded DMG needs "Open Anyway" once; the notes say how. Publish from a clean, pushed main.
@@ -76,7 +79,28 @@ hdiutil create -quiet -volname "LaTeX Writer $VERSION" -srcfolder "$OUT/dmg" -ov
 # The zip holds both apps at its top, as install.sh expects.
 ditto -c -k "$OUT/apps" "$OUT/$NAME.zip"
 cp scripts/install.sh "$OUT/install.sh"
-(cd "$OUT" && shasum -a 256 "$NAME.dmg" "$NAME.zip" install.sh > SHA256SUMS.txt)
+
+# Windows: the tracked files without the Mac apps, tests and launchers, the start script at the top.
+WIN="$NAME-Windows"
+mkdir -p "$OUT/win/$WIN"
+git ls-files -co --exclude-standard | grep -v -E '^(test/|scripts/app/|\.claude/|\.gitignore$)|\.command$' | tar -cf - -T - | tar -C "$OUT/win/$WIN" -xf -
+cp "scripts/windows/Start LaTeX Writer.bat" "$OUT/win/$WIN/"
+printf '%s\n' "$VERSION" > "$OUT/win/$WIN/.version"
+cat > "$OUT/win/$WIN/READ ME FIRST.txt" <<EOF
+LaTeX Writer $VERSION for Windows
+
+1. Install Node.js 24 or newer (https://nodejs.org) and MiKTeX (https://miktex.org) or TeX Live.
+2. Double-click "Start LaTeX Writer.bat". The first start installs what LaTeX Writer needs from
+   the internet, which takes a minute or two. The editor then opens in your browser.
+3. Keep the black window open while you work; close it to stop LaTeX Writer.
+
+For the assistant (optional), install Claude Code or Codex with their own Windows installers and sign in.
+
+More: https://github.com/$REPO
+EOF
+(cd "$OUT/win" && zip -q -r -X "../$WIN.zip" "$WIN")
+[ -f "$OUT/win/$WIN/server/index.ts" ] && [ -f "$OUT/win/$WIN/package-lock.json" ] || { echo "The Windows zip lacks the server"; exit 1; }
+(cd "$OUT" && shasum -a 256 "$NAME.dmg" "$NAME.zip" install.sh "$WIN.zip" > SHA256SUMS.txt)
 
 # Check what was made: the zip unpacks to both apps, the image mounts with both apps and the link.
 CHECK="$OUT/check"
@@ -109,7 +133,11 @@ curl -fsSL https://github.com/$REPO/releases/latest/download/install.sh | bash
 
 Or download **$NAME.dmg**, drag both apps to Applications, and open LaTeX Writer. The apps are not notarized, so macOS blocks the first start: open System Settings › Privacy & Security, click **Open Anyway** next to LaTeX Writer, and confirm. This is needed once per app.
 
-### Requirements
+### Windows
+
+Download **$WIN.zip**, unzip it, and double-click **Start LaTeX Writer.bat**. The editor opens in your browser (there is no app on Windows). You need [Node.js](https://nodejs.org) 24 or newer and [MiKTeX](https://miktex.org) or TeX Live. Windows support is based on [Lukas4314's port](https://github.com/Lukas4314/LaTex-writer).
+
+### Requirements (Mac)
 
 - macOS 12 or later
 - [Node.js](https://nodejs.org) 24 or newer
@@ -122,7 +150,7 @@ EOF
 
 echo
 echo "Built and checked:"
-(cd "$OUT" && ls -lh "$NAME.dmg" "$NAME.zip" install.sh SHA256SUMS.txt | awk '{ print "  " $5 "  " $9 }')
+(cd "$OUT" && ls -lh "$NAME.dmg" "$NAME.zip" "$WIN.zip" install.sh SHA256SUMS.txt | awk '{ print "  " $5 "  " $9 }')
 if [ "$DRY" = 1 ]; then
   echo "Dry run: nothing was published. Files and notes are in $OUT"
   exit 0
@@ -131,5 +159,5 @@ fi
 git tag -a "$TAG" -m "LaTeX Writer $VERSION"
 git push -q origin "$TAG"
 gh release create "$TAG" --repo "$REPO" --title "LaTeX Writer $VERSION" --notes-file "$NOTES" \
-  "$OUT/$NAME.dmg" "$OUT/$NAME.zip" "$OUT/install.sh" "$OUT/SHA256SUMS.txt"
+  "$OUT/$NAME.dmg" "$OUT/$NAME.zip" "$OUT/$WIN.zip" "$OUT/install.sh" "$OUT/SHA256SUMS.txt"
 echo "Published: https://github.com/$REPO/releases/tag/$TAG"

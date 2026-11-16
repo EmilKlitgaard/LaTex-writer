@@ -11,6 +11,11 @@ export const app = {
   events: new Events(),
 }
 
+/** Words for the computer the app runs on: it is built for macOS and also runs on Windows. */
+export const OS = /Windows/.test(navigator.userAgent)
+  ? { windows: true, computer: 'this PC', fileManager: 'File Explorer', trash: 'Recycle Bin' }
+  : { windows: false, computer: 'this Mac', fileManager: 'Finder', trash: 'Trash' }
+
 export type ThemeMode = 'system' | 'light' | 'dark'
 
 export function themeMode(): ThemeMode {

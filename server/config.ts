@@ -1,10 +1,11 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { defaultAppHome } from './platform.ts'
 
 // Everything that must not sync through iCloud lives here.
 export const APP_HOME =
-  process.env.LATEXWRITER_HOME ?? path.join(os.homedir(), 'Library/Application Support/LaTeXWriter')
+  process.env.LATEXWRITER_HOME ?? defaultAppHome()
 export const SCRATCH_DIR = path.join(APP_HOME, 'scratch')
 export const LOG_DIR = path.join(APP_HOME, 'logs')
 export const WEB_BUILD_DIR = path.join(APP_HOME, 'build/web')

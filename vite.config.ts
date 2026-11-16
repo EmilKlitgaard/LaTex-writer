@@ -4,7 +4,9 @@ import path from 'node:path'
 import { defineConfig, type Plugin } from 'vite'
 
 // Build output lives outside iCloud, next to the dependencies.
-const appHome = process.env.LATEXWRITER_HOME ?? path.join(os.homedir(), 'Library/Application Support/LaTeXWriter')
+const appHome = process.env.LATEXWRITER_HOME ?? (process.platform === 'win32'
+  ? path.join(process.env.LOCALAPPDATA ?? path.join(os.homedir(), 'AppData', 'Local'), 'LaTeXWriter')
+  : path.join(os.homedir(), 'Library/Application Support/LaTeXWriter'))
 const outDir = path.join(appHome, 'build/web')
 
 /** PDF.js loads character maps, fallback fonts and image decoders at run time; ship them so the app works offline. */

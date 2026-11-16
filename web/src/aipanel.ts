@@ -4,6 +4,7 @@ import {
 import { app } from './app.ts'
 import { clear, confirmDialog, h, icon, iconButton, toast } from './dom.ts'
 import { renderMarkdown } from './markdown.ts'
+import { OS } from './app.ts'
 
 export type AiPanelHooks = {
   /** What the user is looking at in the editor right now. */
@@ -242,7 +243,7 @@ export class AiPanel {
           h('div', { class: 'ai-box-top' }, this.contextEl, this.sourcesEl, this.imagesEl),
           this.input,
           h('div', { class: 'ai-box-bar' },
-            h('button', { class: 'icon-btn ai-attach', type: 'button', title: 'Let the assistant read files or folders from this Mac in this chat', 'aria-label': 'Add files or folders', 'aria-haspopup': 'menu', onclick: () => this.toggleAttachMenu() }, icon('plus', 15)),
+            h('button', { class: 'icon-btn ai-attach', type: 'button', title: `Let the assistant read files or folders from ${OS.computer} in this chat`, 'aria-label': 'Add files or folders', 'aria-haspopup': 'menu', onclick: () => this.toggleAttachMenu() }, icon('plus', 15)),
             this.modelSelect, this.effortSelect, h('span', { class: 'grow' }), this.sendBtn)),
         this.usageEl),
     )
@@ -772,7 +773,7 @@ export class AiPanel {
       const name = app.ai?.providerName ?? 'Claude Code'
       const others = (app.ai?.providers ?? []).filter((p) => p.available && p.id !== app.ai?.provider)
       this.listEl.append(h('div', { class: 'ai-empty' },
-        h('p', null, h('strong', null, `${name} was not found on this Mac.`)),
+        h('p', null, h('strong', null, `${name} was not found on ${OS.computer}.`)),
         h('p', { class: 'muted' }, app.ai?.provider === 'codex'
           ? 'Install the ChatGPT app or the Codex CLI and sign in, then choose Search again in Settings.'
           : 'The assistant runs through Claude Code with your Claude subscription. Install Claude Code, run "claude" once in Terminal to sign in, then reopen this panel.'),

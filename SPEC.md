@@ -146,6 +146,20 @@ Decided while building; each is a change to something written above.
 - **Connecting other AI apps.** Share › Connect an AI app… (host, inside a project) shows the MCP address, the commands for the agents found, JSON configs for URL-based and command-only clients (`npx mcp-remote`), and a prompt an agent can follow to connect itself. A status line says whether the server is on (it follows the assistant switch; off means `/mcp` answers 404) and turns it on from there. Copyable text everywhere (these snippets, the network address, the LaTeX log, the Problems list's install command, code blocks in the chat) has its copy button inside the text, which shows "Copied" for a moment. Share appears only inside a project.
 - **Keeping a server running.** While either app is open it checks the server every few seconds. When the server goes away (the other app quit, or a crash) it starts a new one with `--reopen`, which opens the project that was open (stored as `openProject` in `config.json`, cleared when the user closes the project). The page reconnects by itself. The server first claims port 4173 strictly, so two apps starting one at the same moment end up with one server. A server that keeps dying is given up after a few tries.
 
+## 7a. Windows (added after v1)
+
+Ported from Lukas4314's fork (one commit on top of `9170913`). The code is the same on both systems. `server/platform.ts` holds every difference:
+- the app's home folder: `%LOCALAPPDATA%\LaTeXWriter` on Windows;
+- TeX folders: MiKTeX, and TeX Live by year;
+- PATH handling with `path.delimiter`, folding Windows' `Path` spelling;
+- `.exe` names for the agents;
+- stopping a compile with `taskkill /T` (no process groups on Windows);
+- opening a browser with `rundll32 url.dll`;
+- showing a file with `explorer /select`;
+- the folder and file dialogs and the Recycle Bin, through PowerShell with Windows Forms. Paths go to PowerShell in environment variables, never inside the script.
+
+The interface takes its words from `OS` in `web/src/app.ts`, using the user agent. `scripts/windows/Start LaTeX Writer.bat` is the counterpart of `launch.sh`. `release.sh` adds `LaTeX-Writer-<version>-Windows.zip` (the tracked files without tests and the Mac app sources, with the start script at the top) to every release. There is no app on Windows, and it is untested by the maintainer.
+
 ## 8. Assistant add-on (added after v1)
 
 Requested after the first version; not part of the original plan above.
