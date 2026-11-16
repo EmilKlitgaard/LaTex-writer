@@ -7,6 +7,7 @@ import { clear, closeOverlays, debounce, h, icon, iconButton, showMenu, store, t
 import { FileTree } from './filetree.ts'
 import { parseOutline, type OutlineItem } from './latex.ts'
 import { LogPanel } from './logpanel.ts'
+import { markdownOutline, renderMarkdown, type FileLinks } from './markdown.ts'
 import { PdfView } from './pdfview.ts'
 import { OS } from './app.ts'
 
@@ -15,6 +16,21 @@ export type WorkbenchHooks = {
   onBack: () => void
   /** Guest: leave the session. */
   onLeave: () => void
+}
+
+const isMarkdown = (path: string | null): boolean => Boolean(path && /\.(md|markdown)$/i.test(path))
+
+/** Every file of the project that is on this computer (not only in the cloud). */
+function allFilesOf(nodes: TreeNode[]): string[] {
+  const out: string[] = []
+  const walk = (list: TreeNode[]): void => {
+    for (const n of list) {
+      if (n.type === 'dir') walk(n.children ?? [])
+      else if (!n.cloud) out.push(n.path)
+    }
+  }
+  walk(nodes)
+  return out
 }
 
 /** The editor screen: file tree, source editor, PDF preview. Returns a function that tears it down. */
@@ -40,7 +56,13 @@ export function mountWorkbench(root: HTMLElement, hooks: WorkbenchHooks): () => 
   const editor = new CodeEditor({
     user: () => app.user!,
     index: () => index,
-    onContentChange: (text) => renderOutline(parseOutline(text)),
+    onContentChange: (text) => {
+      if (!isMarkdown(currentFile)) return renderOutline(parseOutline(text))
+      markdownText = text
+      markdownFor = currentFile
+      renderOutline(markdownOutline(text))
+      if (markdownMode === 'preview') renderPreview()
+    },
     onCompile: () => void compile(),
     onJumpToPdf: () => void showInPdf(),
     onReloaded: () => toast('The file was reloaded from the server', 'info'),
@@ -53,17 +75,126 @@ export function mountWorkbench(root: HTMLElement, hooks: WorkbenchHooks): () => 
   const fileTitle = h('span', { class: 'pane-title' }, 'No file open')
   const showInPdfBtn = iconButton('target', 'Show this place in the PDF (⌘J)', () => void showInPdf())
   const binaryView = h('div', { class: 'binary-view', hidden: true })
+
+  // A Markdown file can be read rendered: the Source / Preview switch in the editor's header.
+  // The choice is remembered per file; jumping to a line always shows the source.
+  let markdownMode: 'source' | 'preview' = 'source'
+  let markdownText = ''
+  /** The file `markdownText` is the content of. */
+  let markdownFor: string | null = null
+  let previewEnteredAt = 0
+  const markdownKey = (path: string): string => `mdView.${app.project?.name ?? ''}.${path}`
+  const sourceBtn = h('button', { class: 'tab', type: 'button', title: 'Edit the Markdown (⇧⌘V)', onclick: () => setMarkdownMode('source') }, 'Source')
+  const previewBtn = h('button', { class: 'tab', type: 'button', title: 'Read it rendered (⇧⌘V)', onclick: () => setMarkdownMode('preview') }, 'Preview')
+  const markdownSwitch = h('span', { class: 'before-after md-switch', role: 'group', 'aria-label': 'Show the Markdown as source or rendered', hidden: true }, sourceBtn, previewBtn)
+  const previewDoc = h('article', { class: 'md md-doc' })
+  const markdownPreview = h('div', {
+    class: 'md-preview', hidden: true, tabindex: 0, 'aria-label': 'Markdown preview',
+    // Double-clicking a passage opens the source there.
+    ondblclick: (e: Event) => {
+      const at = (e.target as HTMLElement).closest<HTMLElement>('[data-line]')
+      if (!at || (e.target as HTMLElement).closest('a, input')) return
+      window.getSelection()?.removeAllRanges()
+      setMarkdownMode('source', true, Number(at.dataset.line))
+    },
+  }, previewDoc)
+  const previewLinks: FileLinks = {
+    files: () => allFilesOf(tree),
+    open: (file, line) => void openFileWhenListed(file, line),
+    symbol: (name) => symbolOf(name),
+  }
+
+  function renderPreview(): void {
+    if (!currentFile || markdownFor !== currentFile) return
+    const top = markdownPreview.scrollTop
+    clear(previewDoc)
+    previewDoc.append(renderMarkdown(markdownText, previewLinks, { path: currentFile, imageUrl: (file) => `/api/project/raw?${q({ path: file })}` }))
+    if (!markdownText.trim()) previewDoc.append(h('p', { class: 'muted' }, 'This file is empty.'))
+    markdownPreview.scrollTop = top
+  }
+
+  /** The rendered block that starts on `line` or the last one before it. */
+  function previewBlockAt(line: number): HTMLElement | null {
+    let best: HTMLElement | null = null
+    for (const el of previewDoc.querySelectorAll<HTMLElement>('[data-line]')) {
+      if (Number(el.dataset.line) <= line) best = el
+      else break
+    }
+    return best
+  }
+
+  /** The source line of the first block at the top of the preview. */
+  function previewTopLine(): number {
+    const top = markdownPreview.getBoundingClientRect().top
+    for (const el of previewDoc.querySelectorAll<HTMLElement>('[data-line]')) {
+      if (el.getBoundingClientRect().bottom > top + 4) return Number(el.dataset.line)
+    }
+    return 1
+  }
+
+  function applyMarkdownMode(): void {
+    const md = isMarkdown(currentFile) && showing === 'editor'
+    const preview = md && markdownMode === 'preview'
+    markdownSwitch.hidden = !md
+    sourceBtn.classList.toggle('active', !preview)
+    previewBtn.classList.toggle('active', preview)
+    sourceBtn.setAttribute('aria-pressed', String(!preview))
+    previewBtn.setAttribute('aria-pressed', String(preview))
+    if (md) {
+      editor.element.hidden = preview
+      markdownPreview.hidden = !preview
+      showInPdfBtn.hidden = true
+    } else markdownPreview.hidden = true
+    if (preview) renderPreview()
+  }
+
+  /** `line`: where the source should open, when leaving the preview. */
+  function setMarkdownMode(mode: 'source' | 'preview', remember = true, line?: number): void {
+    if (!isMarkdown(currentFile)) return
+    if (remember) store(markdownKey(currentFile!), mode)
+    if (mode === markdownMode) return
+    const leaving = markdownMode
+    markdownMode = mode
+    applyMarkdownMode()
+    if (mode === 'preview') {
+      // Open the preview where the cursor is.
+      const line = editor.cursor().line + 1
+      const block = previewBlockAt(line)
+      previewEnteredAt = block ? Number(block.dataset.line) : 1
+      markdownPreview.scrollTop = block && previewEnteredAt > 1 ? block.offsetTop - 12 : 0
+      markdownPreview.focus({ preventScroll: true })
+    } else if (leaving === 'preview') {
+      editor.refreshLayout()
+      // If the reader scrolled on, take the cursor to where they were reading. The editor was
+      // hidden, so it lays itself out again first.
+      const reading = previewTopLine()
+      if (line) requestAnimationFrame(() => editor.goto(line))
+      else if (reading !== previewEnteredAt) requestAnimationFrame(() => editor.goto(reading, false))
+      else editor.focus()
+    }
+  }
   const emptyView = h('div', { class: 'empty-view' }, h('p', null, 'Select a file on the left to start writing.'))
   const editorPane = h('section', { class: 'pane editor-pane', 'aria-label': 'Editor' },
-    h('div', { class: 'pane-header' }, fileTitle, h('span', { class: 'grow' }), showInPdfBtn),
-    h('div', { class: 'pane-body' }, editor.element, binaryView, emptyView),
+    h('div', { class: 'pane-header' }, fileTitle, h('span', { class: 'grow' }), markdownSwitch, showInPdfBtn),
+    h('div', { class: 'pane-body' }, editor.element, markdownPreview, binaryView, emptyView),
   )
+  editorPane.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'v' && isMarkdown(currentFile) && showing === 'editor') {
+      e.preventDefault()
+      e.stopPropagation()
+      setMarkdownMode(markdownMode === 'preview' ? 'source' : 'preview')
+    }
+  }, true)
 
+  let showing: 'editor' | 'binary' | 'empty' = 'empty'
   const showOnly = (which: 'editor' | 'binary' | 'empty'): void => {
+    showing = which
     editor.element.hidden = which !== 'editor'
     binaryView.hidden = which !== 'binary'
     emptyView.hidden = which !== 'empty'
     showInPdfBtn.hidden = which !== 'editor'
+    markdownPreview.hidden = true
+    markdownSwitch.hidden = true
     if (which !== 'binary') {
       filePreview?.destroy()
       filePreview = null
@@ -97,11 +228,22 @@ export function mountWorkbench(root: HTMLElement, hooks: WorkbenchHooks): () => 
     if (narrow.matches) setSidebarOpen(false, false)
     if (node.kind === 'text') {
       showOnly('editor')
+      if (isMarkdown(path)) {
+        // A jump to a line is a jump into the source; otherwise the file opens as it was last seen.
+        markdownMode = line ? 'source' : store(markdownKey(path)) === 'source' ? 'source' : 'preview'
+        // Opening the file that is already open keeps its text: the editor does not load it again.
+        if (markdownFor !== path) {
+          markdownText = ''
+          markdownFor = null
+          clear(previewDoc)
+        }
+        applyMarkdownMode()
+      }
       const ok = await editor.open(path, line)
       if (ok && currentFile === path) {
         editor.setLog(result?.entries ?? [])
         editor.setReview(hunksFor(path))
-        if (!line) editor.focus()
+        if (!line && markdownPreview.hidden) editor.focus()
       }
       return
     }
@@ -167,9 +309,16 @@ export function mountWorkbench(root: HTMLElement, hooks: WorkbenchHooks): () => 
     for (const item of items) {
       outlineEl.appendChild(h('button', {
         class: 'outline-item', type: 'button', style: { paddingLeft: `${10 + item.level * 14}px` }, title: item.title,
-        onclick: () => editor.goto(item.line),
+        onclick: () => gotoLine(item.line),
       }, item.title))
     }
+  }
+
+  /** Shows a line of the open file: in the editor, or in the Markdown preview when that is showing. */
+  function gotoLine(line: number): void {
+    if (markdownPreview.hidden) return editor.goto(line)
+    const block = previewBlockAt(line)
+    if (block) markdownPreview.scrollTo({ top: block.offsetTop - 12, behavior: 'smooth' })
   }
 
   /** Opens a file that may have been created a moment ago and is not in our copy of the tree yet. */
@@ -275,6 +424,14 @@ export function mountWorkbench(root: HTMLElement, hooks: WorkbenchHooks): () => 
 
   // ---- assistant ---------------------------------------------------------------------
 
+  /** Where a \\label or citation key is defined, for links in rendered Markdown. */
+  function symbolOf(name: string): { file: string; line: number; what: string } | null {
+    const label = index.labels.find((l) => l.name === name)
+    if (label) return { file: label.file, line: label.line, what: `\\label{${name}}` }
+    const key = index.bibKeys.find((k) => k.key === name)
+    return key ? { file: key.file, line: key.line, what: `Citation ${name}` } : null
+  }
+
   const aiSlot = h('div', { class: 'ai-slot' })
   const aiBadge = h('span', { class: 'ai-badge', hidden: true })
   const aiButton = h('button', { class: 'btn ai-toggle', type: 'button', title: 'Show or hide the assistant', hidden: true, onclick: () => setAiOpen(!workbench.classList.contains('ai-open')) },
@@ -301,12 +458,7 @@ export function mountWorkbench(root: HTMLElement, hooks: WorkbenchHooks): () => 
         context: () => editor.selectionContext(),
         onJump: (file, line) => void openFileWhenListed(file, line),
         files: () => textFilesOf(tree),
-        symbol: (name) => {
-          const label = index.labels.find((l) => l.name === name)
-          if (label) return { file: label.file, line: label.line, what: `\\label{${name}}` }
-          const key = index.bibKeys.find((k) => k.key === name)
-          return key ? { file: key.file, line: key.line, what: `Citation ${name}` } : null
-        },
+        symbol: symbolOf,
         onReview: applyReview,
         onClose: () => setAiOpen(false),
         // A permission question waits for the user: make sure they can see it.

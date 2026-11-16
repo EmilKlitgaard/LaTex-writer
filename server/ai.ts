@@ -89,18 +89,25 @@ export const HELPER_AGENTS = {
     tools: [t('project_info'), t('read_file'), t('search'), t('edit_file'), t('write_file'), t('compile'), t('check_layout'), t('read_log'), t('use_skill'), t('list_sources'), t('copy_file')],
     model: 'sonnet',
   },
+  auditor: {
+    description: 'Checks a piece of the work on its own, without this conversation: a figure against its data and caption, the factual claims of a passage, a calculation or result. Reports what is wrong with evidence. Brief it with where the material is and a neutral question only (the blind-audit skill says how).',
+    prompt: 'You are an independent reviewer. You get material from a LaTeX project (files, lines, figure labels, PDF pages) and a question about it, and nothing else: judge it on its own, from the files and the compiled PDF, and assume nothing in it is correct. For a figure, look at it with view_page and read the data or code it comes from when that is in the project. For a factual claim, say whether it is supported, contradicted or not checkable here, with the evidence: a cited source, another part of the document, or well-established knowledge; never invent a source. Never edit files. Reply with a short report: problems first, most serious first, each with file:line or page, the evidence and how sure you are. If nothing is wrong, say so in one line.',
+    tools: [t('project_info'), t('read_file'), t('search'), t('read_pdf_text'), t('view_page'), t('check_layout'), t('list_sources')],
+    model: 'sonnet',
+  },
 } as const
 
-const HELPERS_SECTION = `Helper agents (the Agent tool): reader, layout-checker and writer. Each starts fresh, does its part
+const HELPERS_SECTION = `Helper agents (the Agent tool): reader, layout-checker, writer and auditor. Each starts fresh, does its part
 with the same tools, and returns a short report, so its reading, page images and intermediate steps
 do not fill up this conversation.
 - Delegate: reading long files or many PDF pages (reader), every visual or layout check
-  (layout-checker), and large or multi-file writing jobs (writer).
+  (layout-checker), large or multi-file writing jobs (writer), and independent checks of a figure,
+  claim or result (auditor, see the blind-audit skill).
 - Do it yourself: small edits, short reads, and anything needing the context of this conversation.
 - Give a helper a complete, self-contained task (it cannot see this conversation) and ask for a
   short report. Independent helpers can run at the same time.
 - Always set run_in_background to false, so you receive the report before you answer.
-- Use only these three helpers.
+- Use only these four helpers.
 - Helpers can read other projects and attachments you already have access to (list_sources), but
   cannot ask for access: do that yourself first with request_access, and tell the helper the source.
 
@@ -539,7 +546,9 @@ export class AiChat {
    * was switched, or its saved session was lost). Recent messages first to go when it is long.
    */
   private handover(): string | null {
-    const earlier = this.messages.slice(0, -2).filter((m) => m.parts.some((p) => p.kind === 'text'))
+    // A /compact and its reply are about the old session, not the writing.
+    const isCompact = (m: ChatMessage | undefined): boolean => m?.role === 'user' && m.parts.length === 1 && m.parts[0].kind === 'text' && m.parts[0].text === '/compact'
+    const earlier = this.messages.slice(0, -2).filter((m, i, all) => !isCompact(m) && !isCompact(all[i - 1]) && m.parts.some((p) => p.kind === 'text'))
     if (!earlier.length) return null
     const lines: string[] = []
     let size = 0
@@ -593,6 +602,10 @@ export class AiChat {
     if (!text && !hasImages) throw new HttpError(400, 'Write a message first')
     if (text.length > 20_000) throw new HttpError(400, 'That message is too long')
     if (this.busy) throw new HttpError(409, 'The assistant is still working on the previous message')
+    if (/^\/compact(?=\s|$)/.test(text)) {
+      if (text !== '/compact' || hasImages) throw new HttpError(400, '/compact takes nothing else: send it on its own.')
+      return this.compact(settings)
+    }
     const cli = this.cliFor(settings.provider)
     const images = this.saveImages(imagesInput)
     // The chat keeps what the user typed; the model gets the skill's instructions.
@@ -614,8 +627,39 @@ export class AiChat {
     this.run(cli, this.buildPrompt(prompt, context), settings, reply, true, images)
   }
 
+  /**
+   * /compact: Claude Code summarises its own conversation with its built-in /compact. Codex has no
+   * such command when run headless, so its session is dropped instead: the next message starts a
+   * fresh one that is told the chat so far (the same handover as switching agents).
+   */
+  private compact(settings: RunSettings): void {
+    const cli = this.cliFor(settings.provider)
+    this.useProvider(settings.provider)
+    const user: ChatMessage = { id: crypto.randomUUID(), role: 'user', parts: [{ kind: 'text', text: '/compact' }], t: Date.now() }
+    const reply: ChatMessage = { id: crypto.randomUUID(), role: 'assistant', parts: [], t: Date.now() }
+    this.messages.push(user, reply)
+    this.trim()
+    this.emit({ kind: 'message', message: user })
+    if (!this.sessionId || settings.provider === 'codex') {
+      const text = !this.sessionId
+        ? 'There is nothing to compact: the next message starts a fresh conversation.'
+        : 'Codex has no compact command, so the next message starts a fresh Codex session that gets a short summary of this chat.'
+      reply.parts.push({ kind: 'text', text })
+      this.sessionId = null
+      this.persist()
+      this.emit({ kind: 'message', message: reply })
+      this.emit({ kind: 'done', message: reply })
+      return
+    }
+    this.persist()
+    this.current = reply
+    this.emit({ kind: 'message', message: reply })
+    // Not marked as interrupted: if the app closes during it, there is nothing to pick up again.
+    this.run(cli, '/compact', settings, reply, false, [], true)
+  }
+
   /** Claude Code: headless, streaming JSON, only this app's tools and helper agents. */
-  private claudeArgs(settings: RunSettings, mcpUrl: string, resuming: string | null, withImages: boolean): string[] {
+  private claudeArgs(settings: RunSettings, mcpUrl: string, resuming: string | null, withImages: boolean, compact = false): string[] {
     const mcpConfig = JSON.stringify({ mcpServers: { [MCP_SERVER_NAME]: { type: 'http', url: mcpUrl } } })
     const args = [
       '-p',
@@ -631,7 +675,9 @@ export class AiChat {
       '--mcp-config', mcpConfig, '--strict-mcp-config',
       '--allowedTools', `mcp__${MCP_SERVER_NAME}`, 'Agent',
       '--setting-sources', '',
-      '--disable-slash-commands',
+      // Slash commands stay off, so text the user types is never run as one; /compact is the
+      // exception, and then the prompt is exactly "/compact".
+      ...(compact ? [] : ['--disable-slash-commands']),
       '--permission-prompts', 'none',
       '--system-prompt', systemPrompt('claude'),
     ]
@@ -681,14 +727,14 @@ export class AiChat {
     return resuming ? ['exec', 'resume', ...common, resuming, '-'] : ['exec', ...common, '-']
   }
 
-  private run(cli: string, prompt: string, settings: RunSettings, reply: ChatMessage, mayRetry: boolean, images: Extract<ChatPart, { kind: 'image' }>[] = []): void {
+  private run(cli: string, prompt: string, settings: RunSettings, reply: ChatMessage, mayRetry: boolean, images: Extract<ChatPart, { kind: 'image' }>[] = [], compact = false): void {
     fs.mkdirSync(this.cwd, { recursive: true })
     const codex = settings.provider === 'codex'
     // The chat id tells the tools which conversation's attachments they may read, and which project it belongs to.
     const mcpUrl = `http://127.0.0.1:${serverPort}/mcp?chat=${this.active.id}`
     const resuming = this.sessionId
     const imageFiles = images.map((img) => path.join(this.imageDir, `${img.id}.${IMAGE_TYPES[img.type]}`)).filter((f) => fs.existsSync(f))
-    const args = codex ? this.codexArgs(settings, mcpUrl, resuming, imageFiles) : this.claudeArgs(settings, mcpUrl, resuming, imageFiles.length > 0)
+    const args = codex ? this.codexArgs(settings, mcpUrl, resuming, imageFiles) : this.claudeArgs(settings, mcpUrl, resuming, imageFiles.length > 0, compact)
 
     // A clean environment: an API key or a parent agent session must not leak in, or the request
     // would be billed to the API or behave like a nested session.
@@ -819,6 +865,14 @@ export class AiChat {
       if (ev.type === 'system' && ev.subtype === 'init' && typeof ev.session_id === 'string') {
         this.sessionId = ev.session_id
         this.active.provider = 'claude'
+      } else if (ev.type === 'system' && ev.subtype === 'compact_boundary' && compact && !ev.parent_tool_use_id) {
+        const meta = ev.compact_metadata ?? {}
+        const k = (n: unknown): string => (typeof n === 'number' ? `${n < 1000 ? n : `${Math.round(n / 100) / 10}k`} tokens` : '?')
+        appendText(`Compacted the conversation from ${k(meta.pre_tokens)} to ${k(meta.post_tokens)}.`)
+        if (typeof meta.post_tokens === 'number') {
+          this.usage = { ...this.usage, context: meta.post_tokens }
+          this.emit({ kind: 'usage', usage: this.usage })
+        }
       } else if (ev.type === 'stream_event') {
         // Only the main conversation is streamed into the chat; helpers report through their result.
         if (ev.parent_tool_use_id) return

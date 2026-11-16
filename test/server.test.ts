@@ -523,7 +523,7 @@ test('the tool endpoint speaks MCP and refuses web pages', async () => {
   assert.match(skill, /^<skill name="humanize">[\s\S]*<guide>[\s\S]*<\/guide>\n<\/skill>\n\nThe user's request for \/humanize: the introduction$/)
   assert.equal((await tool('use_skill', { name: 'nope' })).isError, true)
   const prompts = (await mcp('prompts/list')).json.result.prompts
-  assert.deepEqual(prompts.map((p: any) => p.name), ['humanize', 'humanize-audit', 'humanize-draft'])
+  assert.deepEqual(prompts.map((p: any) => p.name), ['blind-audit', 'humanize', 'humanize-audit', 'humanize-draft'])
   assert.equal(prompts[0].arguments[0].name, 'request')
   const got = (await mcp('prompts/get', { name: 'humanize-draft', arguments: { request: 'a related-work paragraph' } })).json.result
   assert.equal(got.messages[0].role, 'user')
@@ -687,6 +687,13 @@ test('the chat runs the Claude Code CLI with only this app\'s tools and no API k
   fs.writeFileSync(path.join(bin, 'claude'), `#!/bin/bash
 printf '%s\\n' "$@" > "$HOME/cli-args.txt"
 cat > "$HOME/cli-stdin.txt"
+if [ "$(cat "$HOME/cli-stdin.txt")" = "/compact" ]; then
+  echo '{"type":"system","subtype":"status","status":"compacting"}'
+  echo '{"type":"system","subtype":"init","session_id":"11111111-1111-1111-1111-111111111111"}'
+  echo '{"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"manual","pre_tokens":42510,"post_tokens":1900}}'
+  echo '{"type":"result","is_error":false,"result":""}'
+  exit 0
+fi
 env > "$HOME/cli-env.txt"
 pwd > "$HOME/cli-cwd.txt"
 echo '{"type":"system","subtype":"init","session_id":"11111111-1111-1111-1111-111111111111"}'
@@ -738,7 +745,8 @@ echo '{"type":"result","is_error":false,"result":"Hi from the stand-in."}'
   assert.equal(flag('--effort'), 'medium')
   assert.equal(flag('--autocompact'), '100k')
   const agents = JSON.parse(flag('--agents'))
-  assert.deepEqual(Object.keys(agents), ['reader', 'layout-checker', 'writer'])
+  assert.deepEqual(Object.keys(agents), ['reader', 'layout-checker', 'writer', 'auditor'])
+  assert.ok(!agents.auditor.tools.some((x: string) => /edit_file|write_file|update_notes|copy_file/.test(x)), 'the auditor cannot edit')
   assert.equal(agents.reader.model, 'haiku')
   assert.ok(agents.reader.tools.every((x: string) => /^mcp__latexwriter__(project_info|read_file|search|read_pdf_text|use_skill|list_sources)$/.test(x)), 'the reader cannot edit or ask for access')
   assert.ok(agents.writer.tools.includes('mcp__latexwriter__use_skill'), 'the writer can load a skill it is handed')
@@ -770,11 +778,25 @@ echo '{"type":"result","is_error":false,"result":"Hi from the stand-in."}'
   assert.equal((await chat()).chat.messages[4].parts[0].text, '/humanize-audit section 2')
   assert.match(fs.readFileSync(path.join(HOME, 'cli-stdin.txt'), 'utf8'), /^<context>\nThe user has main\.tex open, cursor at line 3\.\n<\/context>\n\n<skill name="humanize-audit">[\s\S]*<guide>[\s\S]*request for \/humanize-audit: section 2$/)
 
+  // /compact runs Claude Code's own /compact on the same session, with slash commands allowed only then.
+  assert.equal((await host('POST', '/api/host/ai/send', { text: '/compact now' })).status, 400)
+  await host('POST', '/api/host/ai/send', { text: '/compact', context: { file: 'main.tex', line: 3 } })
+  await until(async () => ((await chat()).chat.messages.length === 8 && !(await chat()).chat.busy), 'compact turn')
+  const compacted = (await chat()).chat
+  assert.equal(compacted.messages[6].parts[0].text, '/compact')
+  assert.deepEqual(compacted.messages[7].parts, [{ kind: 'text', text: 'Compacted the conversation from 42.5k tokens to 1.9k tokens.' }])
+  assert.equal(compacted.usage.context, 1900)
+  assert.equal(fs.readFileSync(path.join(HOME, 'cli-stdin.txt'), 'utf8'), '/compact', 'exactly the command: no context block')
+  const cargs0 = fs.readFileSync(path.join(HOME, 'cli-args.txt'), 'utf8').split('\n')
+  assert.equal(cargs0[cargs0.indexOf('--resume') + 1], '11111111-1111-1111-1111-111111111111')
+  assert.equal(cargs0.includes('--disable-slash-commands'), false)
+  assert.ok(cargs0.includes('--strict-mcp-config') && cargs0[cargs0.indexOf('--tools') + 1] === 'Agent', 'otherwise the same locked-down run')
+
   // The model and effort choices are passed on.
   await host('POST', '/api/host/settings', { aiModel: 'haiku', aiEffort: 'low' })
   await host('POST', '/api/host/settings', { aiModel: 'not-a-model', aiEffort: 'extreme' })
   await host('POST', '/api/host/ai/send', { text: 'Third' })
-  await until(async () => ((await chat()).chat.messages.length === 8 && !(await chat()).chat.busy), 'third turn')
+  await until(async () => ((await chat()).chat.messages.length === 10 && !(await chat()).chat.busy), 'third turn')
   const args3 = fs.readFileSync(path.join(HOME, 'cli-args.txt'), 'utf8').split('\n')
   assert.equal(args3[args3.indexOf('--model') + 1], 'haiku')
   assert.equal(args3[args3.indexOf('--effort') + 1], 'low')
@@ -791,10 +813,10 @@ echo '{"type":"result","is_error":false,"result":"Hi from the stand-in."}'
   assert.deepEqual(chats.map((c: any) => [c.title, c.active]), [['Fresh start', true], ['Tighten the abstract', false]])
   assert.equal((await host('POST', '/api/host/ai/open', { id: chats[1].id })).status, 200)
   const reopened = (await chat()).chat
-  assert.equal(reopened.messages.length, 8)
+  assert.equal(reopened.messages.length, 10)
   assert.deepEqual(reopened.chats.map((c: any) => [c.title, c.active]), [['Tighten the abstract', true], ['Fresh start', false]])
   await host('POST', '/api/host/ai/send', { text: 'Continue' })
-  await until(async () => ((await chat()).chat.messages.length === 10 && !(await chat()).chat.busy), 'turn in a reopened chat')
+  await until(async () => ((await chat()).chat.messages.length === 12 && !(await chat()).chat.busy), 'turn in a reopened chat')
   assert.ok(fs.readFileSync(path.join(HOME, 'cli-args.txt'), 'utf8').split('\n').includes('--resume'), 'the reopened chat resumes its session')
 
   // At most 10 chats are kept, the oldest go first, and any chat can be deleted.
@@ -1025,13 +1047,21 @@ echo '{"type":"turn.completed","usage":{"input_tokens":1234,"cached_input_tokens
   assert.ok(fs.readFileSync(args3[2].slice('--image='.length)).equals(gif))
   assert.equal(fs.readFileSync(path.join(HOME, 'codex-stdin.txt'), 'utf8'), 'What is this?')
 
+  // Codex has no headless /compact: the app drops its session instead, without running Codex.
+  fs.writeFileSync(path.join(HOME, 'codex-stdin.txt'), 'untouched')
+  await host('POST', '/api/host/ai/send', { text: '/compact' })
+  await until(async () => !(await state()).chat.busy && (await state()).chat.messages.length === 10, 'the Codex /compact')
+  assert.match((await state()).chat.messages[9].parts[0].text, /^Codex has no compact command/)
+  assert.equal(fs.readFileSync(path.join(HOME, 'codex-stdin.txt'), 'utf8'), 'untouched', 'Codex was not run')
+
   // Back to Claude: its model choice was kept, and it gets a new session told what Codex said.
   assert.equal((await host('POST', '/api/host/settings', { aiProvider: 'claude' })).json.ai.model, claudeModel)
   await host('POST', '/api/host/ai/send', { text: 'Thanks' })
-  await until(async () => !(await state()).chat.busy && (await state()).chat.messages.length === 10, 'back on Claude')
+  await until(async () => !(await state()).chat.busy && (await state()).chat.messages.length === 12, 'back on Claude')
   const cargs = fs.readFileSync(path.join(HOME, 'cli-args.txt'), 'utf8').split('\n')
   assert.ok(!cargs.includes('--resume'))
   assert.match(fs.readFileSync(path.join(HOME, 'cli-stdin.txt'), 'utf8'), /Assistant: Looking\.[\s\S]*Done from Codex\./)
+  assert.doesNotMatch(fs.readFileSync(path.join(HOME, 'cli-stdin.txt'), 'utf8'), /\/compact|no compact command/, 'the handover leaves out the /compact exchange')
 
   // An agent that is not installed cannot be chosen. (On a Mac with the ChatGPT app, Codex is
   // still found there once the stand-in is gone; then it can be chosen, and the test goes back.)

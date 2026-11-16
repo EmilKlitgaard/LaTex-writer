@@ -43,6 +43,16 @@ for (const s of SKILLS) if (s.guide && !guides.has(s.guide)) throw new Error(`Sk
 
 export const findSkill = (name: unknown): Skill | undefined => SKILLS.find((s) => s.name === name)
 
+/**
+ * Chat commands that are not skills: the app carries them out itself instead of sending text to the
+ * model (see Assistant.send).
+ */
+export const COMMANDS: { name: string; description: string; hint: string }[] = [
+  { name: 'compact', description: 'Summarise the conversation so far, so the next replies are faster and use less of your limit.', hint: '' },
+]
+
+const commandList = (): string => [...SKILLS, ...COMMANDS].map((s) => `/${s.name}`).sort().join(', ')
+
 /** The full text of a skill for the model: its task, the user's request, and the guide it rests on. */
 export function skillText(skill: Skill, request = ''): string {
   const guide = skill.guide ? `\n\n<guide>\n${guides.get(skill.guide)}\n</guide>` : ''
@@ -58,12 +68,15 @@ export function expandCommand(text: string): string | null {
   const m = /^\/([a-z][a-z0-9-]*)(?=\s|$)\s*([\s\S]*)$/.exec(text)
   if (!m) return null
   const skill = findSkill(m[1])
-  if (!skill) throw new HttpError(400, `There is no command /${m[1]}. Commands: ${SKILLS.map((s) => `/${s.name}`).join(', ')}.`)
+  if (!skill) throw new HttpError(400, `There is no command /${m[1]}. Commands: ${commandList()}.`)
   return skillText(skill, m[2])
 }
 
 /** One line per skill, for the system prompt and the tool description. */
 export const skillCatalog = (): string => SKILLS.map((s) => `- ${s.name}: ${s.description}`).join('\n')
 
-/** What the chat composer needs to offer the commands. */
-export const skillMenu = (): { name: string; description: string; hint: string }[] => SKILLS.map(({ name, description, hint }) => ({ name, description, hint }))
+/** What the chat composer needs to offer the commands: the skills, then the app's own commands. */
+export const skillMenu = (): { name: string; description: string; hint: string; command?: boolean }[] => [
+  ...SKILLS.map(({ name, description, hint }) => ({ name, description, hint })),
+  ...COMMANDS.map((c) => ({ ...c, command: true })),
+]
