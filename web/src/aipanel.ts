@@ -28,6 +28,66 @@ type ChatState = {
 
 const baseName = (p: string): string => p.replace(/\/+$/, '').split('/').pop() || p
 
+/** A picture waiting to go with the next message: base64 data for the server, a local URL for the preview. */
+type PendingImage = { type: string; data: string; url: string }
+
+const MAX_IMAGES = 4
+const SENDABLE = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
+/** The models take pictures up to 5 MB, and scale anything larger than about this size down anyway. */
+const MAX_BYTES = 4.5 * 1024 * 1024
+const MAX_SIDE = 2000
+
+const toBase64 = (blob: Blob): Promise<string> => new Promise((resolve, reject) => {
+  const reader = new FileReader()
+  reader.onload = () => resolve(String(reader.result).replace(/^data:[^,]*,/, ''))
+  reader.onerror = () => reject(new Error('That image could not be read.'))
+  reader.readAsDataURL(blob)
+})
+
+/**
+ * Makes a pasted picture something the models take: a PNG, JPEG, GIF or WebP of at most 5 MB.
+ * Large pictures (a full-screen Retina screenshot) are scaled down, which also keeps them cheap to send.
+ */
+async function prepareImage(file: Blob): Promise<PendingImage> {
+  let blob: Blob = file
+  let bitmap: ImageBitmap | null = null
+  try {
+    bitmap = await createImageBitmap(file)
+  } catch {
+    throw new Error('That image could not be read. Paste a PNG, JPEG, GIF or WebP picture.')
+  }
+  const scale = Math.min(1, MAX_SIDE / Math.max(bitmap.width, bitmap.height))
+  // An animated GIF that fits is sent as it is; anything else that is too big, or of another type, is redrawn.
+  if (!SENDABLE.includes(file.type) || file.size > MAX_BYTES || (scale < 1 && file.type !== 'image/gif')) {
+    const canvas = document.createElement('canvas')
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale))
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale))
+    canvas.getContext('2d')!.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
+    const encode = (type: string, quality?: number): Promise<Blob | null> => new Promise((resolve) => canvas.toBlob(resolve, type, quality))
+    blob = (await encode('image/png')) ?? blob
+    if (blob.size > MAX_BYTES) blob = (await encode('image/jpeg', 0.88)) ?? blob
+  }
+  bitmap.close()
+  if (blob.size > MAX_BYTES || !SENDABLE.includes(blob.type)) throw new Error('That image is too large to send (at most 5 MB).')
+  return { type: blob.type, data: await toBase64(blob), url: URL.createObjectURL(blob) }
+}
+
+/** A sent picture at full size, over the app; a click or Escape closes it. */
+function showImage(src: string): void {
+  const close = (): void => {
+    overlay.remove()
+    document.removeEventListener('keydown', onKey, true)
+  }
+  const onKey = (e: KeyboardEvent): void => {
+    if (e.key !== 'Escape') return
+    e.stopPropagation()
+    close()
+  }
+  const overlay = h('div', { class: 'ai-lightbox', role: 'dialog', 'aria-label': 'Image', onclick: close }, h('img', { src, alt: 'Image' }))
+  document.addEventListener('keydown', onKey, true)
+  document.body.append(overlay)
+}
+
 const SUGGESTIONS = ['Fix the compile errors', 'Proofread the selected text', 'Make the selected paragraph shorter', 'Check the PDF for layout problems']
 const EFFORT_LABELS: Record<string, string> = { low: 'Quick', medium: 'Balanced', high: 'Thorough' }
 const MAX_LINES_SHOWN = 14
@@ -77,6 +137,11 @@ export class AiPanel {
   private sourcesEl: HTMLElement
   private requestsEl: HTMLElement
   private attachMenu: HTMLElement
+  /** Pictures pasted into the message being written. */
+  private images: PendingImage[] = []
+  private imagesEl: HTMLElement
+  /** Pictures are added one paste after another, so they keep the order they were pasted in. */
+  private imageQueue: Promise<void> = Promise.resolve()
   private nodes = new Map<string, HTMLElement>()
   private renderQueued = new Set<string>()
   private stickToBottom = true
@@ -103,6 +168,7 @@ export class AiPanel {
     this.contextEl = h('div', { class: 'ai-context' })
     this.usageEl = h('div', { class: 'ai-usage' })
     this.sourcesEl = h('div', { class: 'ai-sources', hidden: true })
+    this.imagesEl = h('div', { class: 'ai-images', hidden: true })
     this.requestsEl = h('div', { class: 'ai-requests', hidden: true })
     this.attachMenu = h('div', { class: 'ai-attach-menu', hidden: true, role: 'menu' },
       h('button', { type: 'button', role: 'menuitem', onclick: () => void this.attach('file') }, icon('file', 14), 'Add files…'),
@@ -139,6 +205,16 @@ export class AiPanel {
       },
       onfocus: () => this.updateContext(),
       onblur: () => this.closeSlash(),
+      // A picture on the clipboard (a screenshot, an image copied from a page) goes with the message.
+      // Text wins when the clipboard has both, as it does when copying from Word or Pages.
+      onpaste: (e: ClipboardEvent) => {
+        const data = e.clipboardData
+        if (!data || data.getData('text/plain')) return
+        const files = [...data.files].filter((f) => f.type.startsWith('image/'))
+        if (!files.length) return
+        e.preventDefault()
+        this.queueImages(files)
+      },
     })
     this.sendBtn = h('button', { class: 'btn btn-primary ai-send', type: 'button', onclick: () => (this.busy ? void this.stop() : void this.send()) })
     this.modelSelect = h('select', { class: 'ai-model', title: 'Model', 'aria-label': 'Model', onchange: () => void this.setSetting({ aiModel: this.modelSelect.value }) })
@@ -159,17 +235,78 @@ export class AiPanel {
         this.slashEl,
         this.attachMenu,
         h('div', { class: 'ai-box' },
-          h('div', { class: 'ai-box-top' }, this.contextEl, this.sourcesEl),
+          h('div', { class: 'ai-box-top' }, this.contextEl, this.sourcesEl, this.imagesEl),
           this.input,
           h('div', { class: 'ai-box-bar' },
             h('button', { class: 'icon-btn ai-attach', type: 'button', title: 'Let the assistant read files or folders from this Mac in this chat', 'aria-label': 'Add files or folders', 'aria-haspopup': 'menu', onclick: () => this.toggleAttachMenu() }, icon('plus', 15)),
             this.modelSelect, this.effortSelect, h('span', { class: 'grow' }), this.sendBtn)),
         this.usageEl),
     )
+    // Pictures dropped on the message box go with the message too.
+    const box = this.input.parentElement!
+    const hasImage = (e: DragEvent): boolean => [...(e.dataTransfer?.items ?? [])].some((i) => i.kind === 'file' && i.type.startsWith('image/'))
+    box.addEventListener('dragover', (e) => {
+      if (!hasImage(e)) return
+      e.preventDefault()
+      box.classList.add('drop-target')
+    })
+    box.addEventListener('dragleave', (e) => {
+      if (!box.contains(e.relatedTarget as Node | null)) box.classList.remove('drop-target')
+    })
+    box.addEventListener('drop', (e) => {
+      box.classList.remove('drop-target')
+      const files = [...(e.dataTransfer?.files ?? [])].filter((f) => f.type.startsWith('image/'))
+      if (!files.length) return
+      e.preventDefault()
+      this.queueImages(files)
+    })
     this.applySettings()
     this.renderAll()
     this.updateSendButton()
     void this.refresh()
+  }
+
+  // ---- pasted pictures -------------------------------------------------------------
+
+  private queueImages(files: File[]): void {
+    this.imageQueue = this.imageQueue.then(() => this.addImages(files))
+  }
+
+  private async addImages(files: File[]): Promise<void> {
+    const room = MAX_IMAGES - this.images.length
+    if (room <= 0) {
+      toast(`A message can have at most ${MAX_IMAGES} images.`, 'info')
+      return
+    }
+    if (files.length > room) toast(`Only the first ${room === 1 ? 'image was' : `${room} images were`} added: a message can have at most ${MAX_IMAGES}.`, 'info')
+    for (const file of files.slice(0, room)) {
+      try {
+        this.images.push(await prepareImage(file))
+      } catch (err) {
+        toast((err as Error).message, 'error')
+      }
+    }
+    this.renderImages()
+    this.input.focus()
+  }
+
+  private removeImage(img: PendingImage): void {
+    this.images = this.images.filter((i) => i !== img)
+    URL.revokeObjectURL(img.url)
+    this.renderImages()
+    this.input.focus()
+  }
+
+  private renderImages(): void {
+    clear(this.imagesEl)
+    this.imagesEl.hidden = !this.images.length
+    this.images.forEach((img, i) => {
+      const label = `Image ${i + 1}`
+      this.imagesEl.append(h('span', { class: 'ai-image-chip', title: `${label} goes with your message` },
+        h('img', { src: img.url, alt: label }),
+        h('button', { class: 'ai-image-remove', type: 'button', title: 'Remove', 'aria-label': `Remove ${label.toLowerCase()}`, onclick: () => this.removeImage(img) }, icon('close', 10))))
+    })
+    this.keepBottom()
   }
 
   // ---- state ------------------------------------------------------------------------
@@ -290,18 +427,24 @@ export class AiPanel {
 
   private async send(text = this.input.value): Promise<void> {
     const message = text.trim()
-    if (!message) return
+    const images = this.images
+    if (!message && !images.length) return
     if (this.busy) {
       toast('The assistant is still working on your last message. Wait for it, or press Stop.', 'info')
       return
     }
     this.input.value = ''
+    this.images = []
+    this.renderImages()
     this.autosize()
     this.stickToBottom = true
     try {
-      await api('POST', '/api/host/ai/send', { text: message, context: this.hooks.context() })
+      await api('POST', '/api/host/ai/send', { text: message, context: this.hooks.context(), images: images.map(({ type, data }) => ({ type, data })) })
+      for (const img of images) URL.revokeObjectURL(img.url)
     } catch (err) {
       this.input.value = message
+      this.images = [...images, ...this.images]
+      this.renderImages()
       this.autosize()
       toast((err as Error).message, 'error', 7000)
     }
@@ -664,6 +807,15 @@ export class AiPanel {
     if (!this.nodes.size) clear(this.listEl)
     const node = h('div', { class: `ai-msg ai-${m.role}` })
     if (m.role === 'user') {
+      const pictures = m.parts.filter((p): p is Extract<ChatPart, { kind: 'image' }> => p.kind === 'image')
+      if (pictures.length) {
+        node.classList.add('has-images')
+        node.append(h('div', { class: 'ai-msg-images' }, pictures.map((p, i) => {
+          const src = `/api/host/ai/image/${encodeURIComponent(p.id)}`
+          return h('button', { class: 'ai-msg-image', type: 'button', title: 'Show larger', 'aria-label': `Show image ${i + 1} larger`, onclick: () => showImage(src) },
+            h('img', { src, alt: `Image ${i + 1}`, loading: 'lazy' }))
+        })))
+      }
       const text = m.parts.map((p) => (p.kind === 'text' ? p.text : '')).join('')
       const cmd = /^\/([a-z][a-z0-9-]*)(?=\s|$)\s*/.exec(text)
       if (cmd && app.ai?.skills?.some((s) => s.name === cmd[1])) node.append(h('span', { class: 'ai-skill-chip static' }, `/${cmd[1]}`), text.length > cmd[0].length ? ` ${text.slice(cmd[0].length)}` : '')
@@ -673,7 +825,7 @@ export class AiPanel {
         h('div', { class: `ai-tool ai-tool-${p.status} ${p.parent ? 'ai-tool-nested' : ''}` }, icon(p.status === 'error' ? 'error' : p.status === 'done' ? 'check' : 'refresh', 13), p.label)
       for (const p of m.parts) {
         if (p.kind === 'text') node.append(h('div', { class: 'md' }, renderMarkdown(p.text, { files: this.hooks.files, symbol: this.hooks.symbol, open: (file, line) => this.hooks.onJump(file, line ?? 1) })))
-        else if (!p.parent) {
+        else if (p.kind === 'tool' && !p.parent) {
           node.append(toolRow(p))
           // Steps a helper agent took, tucked under the helper's own line.
           const steps = m.parts.filter((x): x is Extract<ChatPart, { kind: 'tool' }> => x.kind === 'tool' && x.parent === p.id)

@@ -20,11 +20,22 @@ export { findClaudeCli }
  * only act through this app's MCP tools.
  */
 
+/** Pictures the user can paste into a message: what both agents can read. */
+export const IMAGE_TYPES = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' } as const
+export type ImageType = keyof typeof IMAGE_TYPES
+export const MAX_IMAGES = 4
+/** The models take pictures up to 5 MB each. */
+export const MAX_IMAGE_BYTES = 5 * 1024 * 1024
+/** A pasted picture as the panel sends it. */
+export type ImageInput = { type: string; data: string }
+
 export const EFFORTS = ['low', 'medium', 'high'] as const
 export type Effort = (typeof EFFORTS)[number]
 
 export type ChatPart =
   | { kind: 'text'; text: string }
+  /** A picture the user pasted into their message; the file is kept in the chat's own folder. */
+  | { kind: 'image'; id: string; type: ImageType }
   /** parent: the helper-agent call this step belongs to, when a helper made it. */
   | { kind: 'tool'; id: string; label: string; status: 'running' | 'done' | 'error'; parent?: string }
 
@@ -291,6 +302,61 @@ export class AiChat {
     } catch {}
   }
 
+  /** Where pasted pictures are kept: outside the project, next to the agent's own files. */
+  private get imageDir(): string {
+    return path.join(this.cwd, 'images')
+  }
+
+  /** The file of a pasted picture in one of this project's chats, or null. */
+  imageFile(id: unknown): { file: string; type: ImageType } | null {
+    if (typeof id !== 'string' || !/^[0-9a-f-]{36}$/.test(id)) return null
+    for (const c of [this.active, ...this.archive]) {
+      for (const m of c.messages) {
+        for (const p of m.parts) {
+          if (p.kind === 'image' && p.id === id) {
+            const file = path.join(this.imageDir, `${id}.${IMAGE_TYPES[p.type]}`)
+            return fs.existsSync(file) ? { file, type: p.type } : null
+          }
+        }
+      }
+    }
+    return null
+  }
+
+  /** Deletes the pictures of chats that are gone. */
+  private sweepImages(): void {
+    let names: string[]
+    try {
+      names = fs.readdirSync(this.imageDir)
+    } catch {
+      return
+    }
+    const keep = new Set<string>()
+    for (const c of [this.active, ...this.archive]) for (const m of c.messages) for (const p of m.parts) if (p.kind === 'image') keep.add(`${p.id}.${IMAGE_TYPES[p.type]}`)
+    for (const n of names) if (!keep.has(n)) fs.rmSync(path.join(this.imageDir, n), { force: true })
+  }
+
+  /** Checks pasted pictures and saves them; returns their parts, in order. */
+  private saveImages(input: unknown): Extract<ChatPart, { kind: 'image' }>[] {
+    if (input === undefined || input === null) return []
+    if (!Array.isArray(input)) throw new HttpError(400, 'Images must be a list')
+    if (input.length > MAX_IMAGES) throw new HttpError(400, `A message can have at most ${MAX_IMAGES} images`)
+    const decoded = input.map((img: ImageInput) => {
+      const type = img?.type as ImageType
+      if (typeof type !== 'string' || !Object.hasOwn(IMAGE_TYPES, type) || typeof img.data !== 'string') throw new HttpError(400, 'Only PNG, JPEG, GIF and WebP images can be sent')
+      const bytes = Buffer.from(img.data, 'base64')
+      if (!bytes.length) throw new HttpError(400, 'An image was empty')
+      if (bytes.length > MAX_IMAGE_BYTES) throw new HttpError(400, 'Images can be at most 5 MB each')
+      return { type, bytes }
+    })
+    fs.mkdirSync(this.imageDir, { recursive: true })
+    return decoded.map(({ type, bytes }) => {
+      const id = crypto.randomUUID()
+      fs.writeFileSync(path.join(this.imageDir, `${id}.${IMAGE_TYPES[type]}`), bytes)
+      return { kind: 'image' as const, id, type }
+    })
+  }
+
   private get sessionId(): string | null {
     return this.active.sessionId
   }
@@ -402,6 +468,7 @@ export class AiChat {
   private loaded(): void {
     this.usage = { ...this.usage, context: undefined }
     this.persist()
+    this.sweepImages()
     this.emit({ kind: 'loaded', ...this.state() })
   }
 
@@ -476,7 +543,9 @@ export class AiChat {
     const lines: string[] = []
     let size = 0
     for (const m of [...earlier].reverse()) {
-      const textOf = m.parts.map((p) => (p.kind === 'text' ? p.text : '')).join('').trim().slice(0, 1500)
+      const pictures = m.parts.filter((p) => p.kind === 'image').length
+      const textOf = (m.parts.map((p) => (p.kind === 'text' ? p.text : '')).join('').trim().slice(0, 1500)
+        + (pictures ? ` [${pictures === 1 ? 'an image' : `${pictures} images`}, no longer available]` : '')).trim()
       if (!textOf) continue
       const line = `${m.role === 'user' ? 'User' : 'Assistant'}: ${textOf}`
       if (size + line.length > 8000) break
@@ -517,17 +586,21 @@ export class AiChat {
     if (this.active.provider && this.active.provider !== id) this.sessionId = null
   }
 
-  send(textInput: unknown, context: ChatContext, settings: RunSettings): void {
+  send(textInput: unknown, context: ChatContext, settings: RunSettings, imagesInput?: unknown): void {
     const text = typeof textInput === 'string' ? textInput.trim() : ''
-    if (!text) throw new HttpError(400, 'Write a message first')
+    const hasImages = Array.isArray(imagesInput) && imagesInput.length > 0
+    if (!text && !hasImages) throw new HttpError(400, 'Write a message first')
     if (text.length > 20_000) throw new HttpError(400, 'That message is too long')
     if (this.busy) throw new HttpError(409, 'The assistant is still working on the previous message')
-    // The chat keeps what the user typed; the model gets the skill's instructions.
-    const prompt = expandCommand(text) ?? text
     const cli = this.cliFor(settings.provider)
+    const images = this.saveImages(imagesInput)
+    // The chat keeps what the user typed; the model gets the skill's instructions.
+    const prompt = (text && expandCommand(text)) || text || (images.length === 1 ? 'See the image.' : 'See the images.')
     this.useProvider(settings.provider)
 
-    const user: ChatMessage = { id: crypto.randomUUID(), role: 'user', parts: [{ kind: 'text', text }], t: Date.now() }
+    const parts: ChatPart[] = [...images]
+    if (text) parts.push({ kind: 'text', text })
+    const user: ChatMessage = { id: crypto.randomUUID(), role: 'user', parts, t: Date.now() }
     const reply: ChatMessage = { id: crypto.randomUUID(), role: 'assistant', parts: [], t: Date.now() }
     this.messages.push(user, reply)
     this.active.interrupted = true
@@ -537,11 +610,11 @@ export class AiChat {
     this.current = reply
     this.emit({ kind: 'message', message: user })
     this.emit({ kind: 'message', message: reply })
-    this.run(cli, this.buildPrompt(prompt, context), settings, reply, true)
+    this.run(cli, this.buildPrompt(prompt, context), settings, reply, true, images)
   }
 
   /** Claude Code: headless, streaming JSON, only this app's tools and helper agents. */
-  private claudeArgs(settings: RunSettings, mcpUrl: string, resuming: string | null): string[] {
+  private claudeArgs(settings: RunSettings, mcpUrl: string, resuming: string | null, withImages: boolean): string[] {
     const mcpConfig = JSON.stringify({ mcpServers: { [MCP_SERVER_NAME]: { type: 'http', url: mcpUrl } } })
     const args = [
       '-p',
@@ -562,6 +635,8 @@ export class AiChat {
       '--system-prompt', systemPrompt('claude'),
     ]
     if (resuming) args.push('--resume', resuming)
+    // Pictures go in a JSON message on stdin; plain text needs nothing more.
+    if (withImages) args.push('--input-format', 'stream-json')
     return args
   }
 
@@ -575,11 +650,13 @@ export class AiChat {
    * collaboration and environment notes are left out. Measured: a reply that reads one file went
    * from 62k to 31k input tokens.
    */
-  private codexArgs(settings: RunSettings, mcpUrl: string, resuming: string | null): string[] {
+  private codexArgs(settings: RunSettings, mcpUrl: string, resuming: string | null, images: string[]): string[] {
     const toml = (v: string): string => JSON.stringify(v)
     const instructions = path.join(this.cwd, 'instructions.md')
     fs.writeFileSync(instructions, systemPrompt('codex'))
     const common = [
+      // --image takes several values, so each is given in the "=" form, before the other options.
+      ...images.map((file) => `--image=${file}`),
       '--json', '--skip-git-repo-check', '--ignore-user-config', '--ignore-rules',
       ...(settings.model ? ['-m', settings.model] : []),
       '-c', `model_reasoning_effort=${toml(settings.effort)}`,
@@ -603,13 +680,14 @@ export class AiChat {
     return resuming ? ['exec', 'resume', ...common, resuming, '-'] : ['exec', ...common, '-']
   }
 
-  private run(cli: string, prompt: string, settings: RunSettings, reply: ChatMessage, mayRetry: boolean): void {
+  private run(cli: string, prompt: string, settings: RunSettings, reply: ChatMessage, mayRetry: boolean, images: Extract<ChatPart, { kind: 'image' }>[] = []): void {
     fs.mkdirSync(this.cwd, { recursive: true })
     const codex = settings.provider === 'codex'
     // The chat id tells the tools which conversation's attachments they may read, and which project it belongs to.
     const mcpUrl = `http://127.0.0.1:${serverPort}/mcp?chat=${this.active.id}`
     const resuming = this.sessionId
-    const args = codex ? this.codexArgs(settings, mcpUrl, resuming) : this.claudeArgs(settings, mcpUrl, resuming)
+    const imageFiles = images.map((img) => path.join(this.imageDir, `${img.id}.${IMAGE_TYPES[img.type]}`)).filter((f) => fs.existsSync(f))
+    const args = codex ? this.codexArgs(settings, mcpUrl, resuming, imageFiles) : this.claudeArgs(settings, mcpUrl, resuming, imageFiles.length > 0)
 
     // A clean environment: an API key or a parent agent session must not leak in, or the request
     // would be billed to the API or behave like a nested session.
@@ -628,7 +706,15 @@ export class AiChat {
     this.emit({ kind: 'busy', busy: true })
     // A retry after a lost session continues the same turn, so its clock keeps running.
     this.setActivity(resuming ? 'Opening the conversation…' : codex ? 'Starting Codex…' : 'Starting Claude Code…', mayRetry ? Date.now() : undefined)
-    child.stdin!.end(prompt)
+    if (!codex && imageFiles.length) {
+      const content = [
+        ...imageFiles.map((file, i) => ({ type: 'image', source: { type: 'base64', media_type: images[i].type, data: fs.readFileSync(file).toString('base64') } })),
+        { type: 'text', text: prompt },
+      ]
+      child.stdin!.end(`${JSON.stringify({ type: 'user', message: { role: 'user', content } })}\n`)
+    } else {
+      child.stdin!.end(prompt)
+    }
     if (codex) this.usage = { lastReply: this.usage.lastReply }
     else this.usage = { ...this.usage, lastReply: undefined }
 
@@ -805,7 +891,7 @@ export class AiChat {
       if (resuming && mayRetry && !this.stopRequested && !producedAnything && !gotResult && code !== 0 && !signal && /session|conversation|resume|rollout|thread/i.test(stderr)) {
         this.sessionId = null
         const before = this.handover()
-        this.run(cli, [this.host.overview(), before, prompt].filter(Boolean).join('\n\n'), settings, reply, false)
+        this.run(cli, [this.host.overview(), before, prompt].filter(Boolean).join('\n\n'), settings, reply, false, images)
         return
       }
       for (const part of tools.values()) if (part.status === 'running') part.status = 'error'
