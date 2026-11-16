@@ -359,7 +359,8 @@ export async function startServer(opts: { port?: number; strictPort?: boolean } 
     return { ai: aiState(), chat: project && getConfig().ai.enabled ? project.ai.state() : null, review: project ? project.review.summary() : null }
   })
 
-  app.post('/api/host/ai/send', async (req) => {
+  // Pasted pictures travel in the message, so it may be larger than other requests.
+  app.post('/api/host/ai/send', { bodyLimit: 32 * 1024 * 1024 }, async (req) => {
     requireAi(req)
     const b = body(req)
     const c = (b.context && typeof b.context === 'object' ? b.context : {}) as Record<string, unknown>
@@ -370,8 +371,19 @@ export async function startServer(opts: { port?: number; strictPort?: boolean } 
       selectionStart: Number.isFinite(Number(c.selectionStart)) ? Number(c.selectionStart) : undefined,
       selectionEnd: Number.isFinite(Number(c.selectionEnd)) ? Number(c.selectionEnd) : undefined,
     }
-    requireProject().ai.send(b.text, context, runSettings())
+    requireProject().ai.send(b.text, context, runSettings(), b.images)
     return { ok: true }
+  })
+
+  // A picture pasted into one of this project's chats.
+  app.get('/api/host/ai/image/:id', async (req, reply) => {
+    requireHost(req)
+    const found = requireProject().ai.imageFile((req.params as { id?: string }).id)
+    if (!found) throw new HttpError(404, 'That image is gone')
+    reply.header('Content-Type', found.type)
+    reply.header('Cache-Control', 'private, max-age=31536000, immutable')
+    reply.header('Content-Security-Policy', "sandbox; default-src 'none'")
+    return reply.send(fs.createReadStream(found.file))
   })
 
   // Looks for the agents installed on this Mac again (after installing one, for example).

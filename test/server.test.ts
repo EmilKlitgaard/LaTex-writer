@@ -907,6 +907,34 @@ test('other projects are readable only after the user allows it, and attachments
 
   // Leave the project as it was for the tests that follow.
   await host('POST', '/api/host/review/decline', {})
+  // A pasted picture goes to Claude Code as an image block in a JSON message; the chat keeps it.
+  const png = Buffer.from('89504e470d0a1a0a0000000d4948445200000001000000010806000000', 'hex')
+  assert.equal((await host('POST', '/api/host/ai/send', { text: '', images: [{ type: 'image/svg+xml', data: png.toString('base64') }] })).status, 400, 'only image types the models read')
+  assert.equal((await host('POST', '/api/host/ai/send', { text: 'x', images: Array(5).fill({ type: 'image/png', data: png.toString('base64') }) })).status, 400, 'at most four')
+  const chat = async (): Promise<any> => (await host('GET', '/api/host/ai/state')).json
+  const before = (await chat()).chat.messages.length
+  assert.equal((await host('POST', '/api/host/ai/send', { text: '', images: [{ type: 'image/png', data: png.toString('base64') }] })).status, 200, 'a picture alone is a message')
+  const pictured = await until(async () => {
+    const s = await chat()
+    return !s.chat.busy && s.chat.messages.length === before + 2 ? s : null
+  }, 'the turn with a picture')
+  const picPart = pictured.chat.messages[before].parts[0]
+  assert.deepEqual([picPart.kind, picPart.type], ['image', 'image/png'])
+  const args3 = fs.readFileSync(path.join(HOME, 'cli-args.txt'), 'utf8').split('\n')
+  assert.equal(args3[args3.indexOf('--input-format') + 1], 'stream-json')
+  const sent = JSON.parse(fs.readFileSync(path.join(HOME, 'cli-stdin.txt'), 'utf8'))
+  assert.equal(sent.type, 'user')
+  assert.deepEqual(sent.message.content[0], { type: 'image', source: { type: 'base64', media_type: 'image/png', data: png.toString('base64') } })
+  assert.equal(sent.message.content[1].type, 'text')
+  assert.match(sent.message.content[1].text, /See the image\.$/)
+  const served = await fetch(`${HOST}/api/host/ai/image/${picPart.id}`, { headers: { Origin: HOST } })
+  assert.deepEqual([served.status, served.headers.get('content-type'), Buffer.from(await served.arrayBuffer()).equals(png)], [200, 'image/png', true])
+  assert.equal((await host('GET', '/api/host/ai/image/00000000-0000-0000-0000-000000000000')).status, 404)
+  // A new chat keeps the picture (the old chat stays in the list); deleting that chat deletes it.
+  await host('POST', '/api/host/ai/reset', {})
+  assert.equal((await host('GET', `/api/host/ai/image/${picPart.id}`)).status, 200)
+  await host('POST', '/api/host/ai/delete', { id: pictured.chat.activeId })
+  assert.equal((await host('GET', `/api/host/ai/image/${picPart.id}`)).status, 404)
   fs.rmSync(path.join(projectDir, 'sections'), { recursive: true, force: true })
   fs.rmSync(ex1, { recursive: true })
   fs.rmSync(ex3, { recursive: true })
@@ -987,10 +1015,20 @@ echo '{"type":"turn.completed","usage":{"input_tokens":1234,"cached_input_tokens
   assert.ok(!args2.includes('-s') && !args2.includes('-C'), 'exec resume takes neither')
   assert.equal(fs.readFileSync(path.join(HOME, 'codex-stdin.txt'), 'utf8'), 'And the title?')
 
+  // A pasted picture goes to Codex as a file, given before the options that follow it.
+  const gif = Buffer.from('474946383961010001000000002c00000000010001000002', 'hex')
+  await host('POST', '/api/host/ai/send', { text: 'What is this?', images: [{ type: 'image/gif', data: gif.toString('base64') }] })
+  await until(async () => !(await state()).chat.busy && (await state()).chat.messages.length === 8, 'the Codex turn with a picture')
+  const args3 = fs.readFileSync(path.join(HOME, 'codex-args.txt'), 'utf8').split('\n')
+  assert.deepEqual([args3[0], args3[1]], ['exec', 'resume'])
+  assert.match(args3[2], /^--image=\/.+\.gif$/)
+  assert.ok(fs.readFileSync(args3[2].slice('--image='.length)).equals(gif))
+  assert.equal(fs.readFileSync(path.join(HOME, 'codex-stdin.txt'), 'utf8'), 'What is this?')
+
   // Back to Claude: its model choice was kept, and it gets a new session told what Codex said.
   assert.equal((await host('POST', '/api/host/settings', { aiProvider: 'claude' })).json.ai.model, claudeModel)
   await host('POST', '/api/host/ai/send', { text: 'Thanks' })
-  await until(async () => !(await state()).chat.busy && (await state()).chat.messages.length === 8, 'back on Claude')
+  await until(async () => !(await state()).chat.busy && (await state()).chat.messages.length === 10, 'back on Claude')
   const cargs = fs.readFileSync(path.join(HOME, 'cli-args.txt'), 'utf8').split('\n')
   assert.ok(!cargs.includes('--resume'))
   assert.match(fs.readFileSync(path.join(HOME, 'cli-stdin.txt'), 'utf8'), /Assistant: Looking\.[\s\S]*Done from Codex\./)
