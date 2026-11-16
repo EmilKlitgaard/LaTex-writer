@@ -97,6 +97,31 @@ export const HELPER_AGENTS = {
   },
 } as const
 
+/**
+ * Compaction happens between turns, not during one. Before a message is sent, a Claude Code
+ * conversation this large is first summarised with /compact.
+ *
+ * Measured in a real 21-turn session with the former `--autocompact 100k`: Claude Code compacts at
+ * the window minus about 33k (it fired at 67-70k), 3 of its 4 compactions struck mid-turn, each
+ * stalled the reply for about 2 minutes, and a turn grew the context by at most 18k. So turns now
+ * start below 60k (as cheap per step as before), and Claude Code's own compaction, with a 130k
+ * window (about 97k), stays only as a safety net 37k above that, twice the largest turn growth.
+ */
+export const COMPACT_BEFORE = 60_000
+const AUTOCOMPACT_WINDOW = '130k'
+
+/** How a run of the agent is meant: a normal turn, or a /compact (typed by the user, or before a turn). */
+type RunOptions = {
+  /** A lost session may be started afresh with a handover. */
+  mayRetry: boolean
+  images?: Extract<ChatPart, { kind: 'image' }>[]
+  compact?: 'manual' | 'auto'
+  /** Runs instead of finishing the reply when this run ends without being stopped (the turn after an automatic /compact). */
+  then?: () => void
+  /** Continues the same turn, so its clock keeps running. */
+  continued?: boolean
+}
+
 const HELPERS_SECTION = `Helper agents (the Agent tool): reader, layout-checker, writer and auditor. Each starts fresh, does its part
 with the same tools, and returns a short report, so its reading, page images and intermediate steps
 do not fill up this conversation.
@@ -624,7 +649,12 @@ export class AiChat {
     this.current = reply
     this.emit({ kind: 'message', message: user })
     this.emit({ kind: 'message', message: reply })
-    this.run(cli, this.buildPrompt(prompt, context), settings, reply, true, images)
+    // A large Claude Code conversation is compacted now, before the turn, so it never happens while
+    // the agent is in the middle of the work.
+    const compactFirst = settings.provider === 'claude' && this.sessionId !== null && (this.usage.context ?? 0) >= COMPACT_BEFORE
+    const turn = (): void => this.run(cli, this.buildPrompt(prompt, context), settings, reply, { mayRetry: true, images, continued: compactFirst })
+    if (compactFirst) this.run(cli, '/compact', settings, reply, { mayRetry: false, compact: 'auto', then: turn })
+    else turn()
   }
 
   /**
@@ -655,19 +685,19 @@ export class AiChat {
     this.current = reply
     this.emit({ kind: 'message', message: reply })
     // Not marked as interrupted: if the app closes during it, there is nothing to pick up again.
-    this.run(cli, '/compact', settings, reply, false, [], true)
+    this.run(cli, '/compact', settings, reply, { mayRetry: false, compact: 'manual' })
   }
 
   /** Claude Code: headless, streaming JSON, only this app's tools and helper agents. */
-  private claudeArgs(settings: RunSettings, mcpUrl: string, resuming: string | null, withImages: boolean, compact = false): string[] {
+  private claudeArgs(settings: RunSettings, mcpUrl: string, resuming: string | null, withImages: boolean, compact: boolean): string[] {
     const mcpConfig = JSON.stringify({ mcpServers: { [MCP_SERVER_NAME]: { type: 'http', url: mcpUrl } } })
     const args = [
       '-p',
       '--output-format', 'stream-json', '--verbose', '--include-partial-messages',
       '--model', settings.model,
       '--effort', settings.effort,
-      // Summarise the conversation before it grows past this, instead of re-sending it all every step.
-      '--autocompact', '100k',
+      // Only a safety net for one very long turn: the app compacts between turns (COMPACT_BEFORE).
+      '--autocompact', AUTOCOMPACT_WINDOW,
       // No built-in tools except the one that starts helper agents; no user plugins, skills, hooks or
       // other MCP servers: only this app's tools.
       '--tools', 'Agent',
@@ -727,14 +757,15 @@ export class AiChat {
     return resuming ? ['exec', 'resume', ...common, resuming, '-'] : ['exec', ...common, '-']
   }
 
-  private run(cli: string, prompt: string, settings: RunSettings, reply: ChatMessage, mayRetry: boolean, images: Extract<ChatPart, { kind: 'image' }>[] = [], compact = false): void {
+  private run(cli: string, prompt: string, settings: RunSettings, reply: ChatMessage, opts: RunOptions): void {
+    const { mayRetry, images = [], compact, then } = opts
     fs.mkdirSync(this.cwd, { recursive: true })
     const codex = settings.provider === 'codex'
     // The chat id tells the tools which conversation's attachments they may read, and which project it belongs to.
     const mcpUrl = `http://127.0.0.1:${serverPort}/mcp?chat=${this.active.id}`
     const resuming = this.sessionId
     const imageFiles = images.map((img) => path.join(this.imageDir, `${img.id}.${IMAGE_TYPES[img.type]}`)).filter((f) => fs.existsSync(f))
-    const args = codex ? this.codexArgs(settings, mcpUrl, resuming, imageFiles) : this.claudeArgs(settings, mcpUrl, resuming, imageFiles.length > 0, compact)
+    const args = codex ? this.codexArgs(settings, mcpUrl, resuming, imageFiles) : this.claudeArgs(settings, mcpUrl, resuming, imageFiles.length > 0, compact !== undefined)
 
     // A clean environment: an API key or a parent agent session must not leak in, or the request
     // would be billed to the API or behave like a nested session.
@@ -751,8 +782,10 @@ export class AiChat {
     this.child = child
     this.stopRequested = false
     this.emit({ kind: 'busy', busy: true })
-    // A retry after a lost session continues the same turn, so its clock keeps running.
-    this.setActivity(resuming ? 'Opening the conversation…' : codex ? 'Starting Codex…' : 'Starting Claude Code…', mayRetry ? Date.now() : undefined)
+    // A retry after a lost session, or the turn after an automatic /compact, continues the same
+    // turn, so its clock keeps running.
+    const fresh = !opts.continued && (mayRetry || compact !== undefined)
+    this.setActivity(compact === 'auto' ? 'Summarising the conversation to keep it small…' : resuming ? 'Opening the conversation…' : codex ? 'Starting Codex…' : 'Starting Claude Code…', fresh ? Date.now() : undefined)
     if (!codex && imageFiles.length) {
       const content = [
         ...imageFiles.map((file, i) => ({ type: 'image', source: { type: 'base64', media_type: images[i].type, data: fs.readFileSync(file).toString('base64') } })),
@@ -868,7 +901,8 @@ export class AiChat {
       } else if (ev.type === 'system' && ev.subtype === 'compact_boundary' && compact && !ev.parent_tool_use_id) {
         const meta = ev.compact_metadata ?? {}
         const k = (n: unknown): string => (typeof n === 'number' ? `${n < 1000 ? n : `${Math.round(n / 100) / 10}k`} tokens` : '?')
-        appendText(`Compacted the conversation from ${k(meta.pre_tokens)} to ${k(meta.post_tokens)}.`)
+        // Before a turn it happens quietly: the reply is the answer to the user's message.
+        if (compact === 'manual') appendText(`Compacted the conversation from ${k(meta.pre_tokens)} to ${k(meta.post_tokens)}.`)
         if (typeof meta.post_tokens === 'number') {
           this.usage = { ...this.usage, context: meta.post_tokens }
           this.emit({ kind: 'usage', usage: this.usage })
@@ -913,6 +947,9 @@ export class AiChat {
         }
         this.emit({ kind: 'usage', usage: this.usage })
       } else if (ev.type === 'result') {
+        // A /compact before a turn has nothing to say, and a failed one ("not enough messages") is
+        // no reason to hold the turn back.
+        if (compact === 'auto') return void (gotResult = true)
         // A helper left running in the background produces a second result later; keep the last.
         gotResult = true
         delete reply.error
@@ -942,11 +979,13 @@ export class AiChat {
       if (finished || this.disposed) return
       finished = true
       if (this.child === child) this.child = null
+      // The automatic /compact is done (or failed: the turn goes ahead anyway): now the turn itself.
+      if (then && !spawnError && !signal && !this.stopRequested) return then()
       // The saved conversation is gone on Claude Code's side (cleared, or a new Mac): start a fresh one.
       if (resuming && mayRetry && !this.stopRequested && !producedAnything && !gotResult && code !== 0 && !signal && /session|conversation|resume|rollout|thread/i.test(stderr)) {
         this.sessionId = null
         const before = this.handover()
-        this.run(cli, [this.host.overview(), before, prompt].filter(Boolean).join('\n\n'), settings, reply, false, images)
+        this.run(cli, [this.host.overview(), before, prompt].filter(Boolean).join('\n\n'), settings, reply, { mayRetry: false, images, continued: true })
         return
       }
       for (const part of tools.values()) if (part.status === 'running') part.status = 'error'
@@ -997,7 +1036,7 @@ export class AiChat {
     this.current = reply
     this.emit({ kind: 'message', message: reply })
     const note = 'The app was closed while you were working on the previous request, so it was cut off. Check the current state of the files, then carry on and finish that request. Do not redo what is already done.'
-    this.run(cli, this.sessionId ? note : [this.host.overview(), this.handover(), note].filter(Boolean).join('\n\n'), settings, reply, true)
+    this.run(cli, this.sessionId ? note : [this.host.overview(), this.handover(), note].filter(Boolean).join('\n\n'), settings, reply, { mayRetry: true })
   }
 
   dispose(): void {

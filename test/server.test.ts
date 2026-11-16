@@ -687,6 +687,8 @@ test('the chat runs the Claude Code CLI with only this app\'s tools and no API k
   fs.writeFileSync(path.join(bin, 'claude'), `#!/bin/bash
 printf '%s\\n' "$@" > "$HOME/cli-args.txt"
 cat > "$HOME/cli-stdin.txt"
+{ cat "$HOME/cli-stdin.txt"; printf '\n<<END>>\n'; } >> "$HOME/cli-stdin-log.txt"
+CONTEXT=$(cat "$HOME/cli-context.txt" 2>/dev/null || echo 42000)
 if [ "$(cat "$HOME/cli-stdin.txt")" = "/compact" ]; then
   echo '{"type":"system","subtype":"status","status":"compacting"}'
   echo '{"type":"system","subtype":"init","session_id":"11111111-1111-1111-1111-111111111111"}'
@@ -699,7 +701,7 @@ pwd > "$HOME/cli-cwd.txt"
 echo '{"type":"system","subtype":"init","session_id":"11111111-1111-1111-1111-111111111111"}'
 echo '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi from "}}}'
 echo '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"the stand-in."}}}'
-echo '{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":10,"cache_read_input_tokens":42000,"cache_creation_input_tokens":500}}}}'
+echo '{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":10,"cache_read_input_tokens":'$CONTEXT',"cache_creation_input_tokens":500}}}}'
 echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Hi from the stand-in."},{"type":"tool_use","id":"t1","name":"mcp__latexwriter__edit_file","input":{"path":"main.tex"}}]}}'
 echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","is_error":false}]}}'
 echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"a1","name":"Agent","input":{"subagent_type":"layout-checker","description":"Check pages 1-3","run_in_background":false}}]}}'
@@ -743,7 +745,7 @@ echo '{"type":"result","is_error":false,"result":"Hi from the stand-in."}'
   assert.deepEqual(args.slice(args.indexOf('--allowedTools') + 1, args.indexOf('--allowedTools') + 3), ['mcp__latexwriter', 'Agent'])
   assert.equal(flag('--model'), 'sonnet')
   assert.equal(flag('--effort'), 'medium')
-  assert.equal(flag('--autocompact'), '100k')
+  assert.equal(flag('--autocompact'), '130k', 'only a safety net: the app compacts between turns')
   const agents = JSON.parse(flag('--agents'))
   assert.deepEqual(Object.keys(agents), ['reader', 'layout-checker', 'writer', 'auditor'])
   assert.ok(!agents.auditor.tools.some((x: string) => /edit_file|write_file|update_notes|copy_file/.test(x)), 'the auditor cannot edit')
@@ -792,11 +794,32 @@ echo '{"type":"result","is_error":false,"result":"Hi from the stand-in."}'
   assert.equal(cargs0.includes('--disable-slash-commands'), false)
   assert.ok(cargs0.includes('--strict-mcp-config') && cargs0[cargs0.indexOf('--tools') + 1] === 'Agent', 'otherwise the same locked-down run')
 
+  // A large conversation is compacted before the next turn, quietly, never during one.
+  fs.writeFileSync(path.join(HOME, 'cli-context.txt'), '150000')
+  await host('POST', '/api/host/ai/send', { text: 'A long turn' })
+  await until(async () => ((await chat()).chat.messages.length === 10 && !(await chat()).chat.busy), 'long turn')
+  assert.equal((await chat()).chat.usage.context, 150510)
+  fs.rmSync(path.join(HOME, 'cli-context.txt'))
+  fs.writeFileSync(path.join(HOME, 'cli-stdin-log.txt'), '')
+  await host('POST', '/api/host/ai/send', { text: 'After the long turn' })
+  await until(async () => ((await chat()).chat.messages.length === 12 && !(await chat()).chat.busy), 'turn after compaction')
+  const prompts = fs.readFileSync(path.join(HOME, 'cli-stdin-log.txt'), 'utf8').split('\n<<END>>\n').filter(Boolean)
+  assert.deepEqual(prompts, ['/compact', 'After the long turn'], 'compacted first, then the message, in one turn')
+  const afterCompact = (await chat()).chat
+  assert.equal(afterCompact.messages[11].parts[0].text, 'Hi from the stand-in.', 'the reply is the answer, with no compaction note')
+  assert.equal(afterCompact.messages[11].error, undefined)
+  assert.equal(afterCompact.usage.context, 42510)
+  // Below the limit, no compaction.
+  fs.writeFileSync(path.join(HOME, 'cli-stdin-log.txt'), '')
+  await host('POST', '/api/host/ai/send', { text: 'A short one' })
+  await until(async () => ((await chat()).chat.messages.length === 14 && !(await chat()).chat.busy), 'short turn')
+  assert.deepEqual(fs.readFileSync(path.join(HOME, 'cli-stdin-log.txt'), 'utf8').split('\n<<END>>\n').filter(Boolean), ['A short one'])
+
   // The model and effort choices are passed on.
   await host('POST', '/api/host/settings', { aiModel: 'haiku', aiEffort: 'low' })
   await host('POST', '/api/host/settings', { aiModel: 'not-a-model', aiEffort: 'extreme' })
   await host('POST', '/api/host/ai/send', { text: 'Third' })
-  await until(async () => ((await chat()).chat.messages.length === 10 && !(await chat()).chat.busy), 'third turn')
+  await until(async () => ((await chat()).chat.messages.length === 16 && !(await chat()).chat.busy), 'third turn')
   const args3 = fs.readFileSync(path.join(HOME, 'cli-args.txt'), 'utf8').split('\n')
   assert.equal(args3[args3.indexOf('--model') + 1], 'haiku')
   assert.equal(args3[args3.indexOf('--effort') + 1], 'low')
@@ -813,10 +836,10 @@ echo '{"type":"result","is_error":false,"result":"Hi from the stand-in."}'
   assert.deepEqual(chats.map((c: any) => [c.title, c.active]), [['Fresh start', true], ['Tighten the abstract', false]])
   assert.equal((await host('POST', '/api/host/ai/open', { id: chats[1].id })).status, 200)
   const reopened = (await chat()).chat
-  assert.equal(reopened.messages.length, 10)
+  assert.equal(reopened.messages.length, 16)
   assert.deepEqual(reopened.chats.map((c: any) => [c.title, c.active]), [['Tighten the abstract', true], ['Fresh start', false]])
   await host('POST', '/api/host/ai/send', { text: 'Continue' })
-  await until(async () => ((await chat()).chat.messages.length === 12 && !(await chat()).chat.busy), 'turn in a reopened chat')
+  await until(async () => ((await chat()).chat.messages.length === 18 && !(await chat()).chat.busy), 'turn in a reopened chat')
   assert.ok(fs.readFileSync(path.join(HOME, 'cli-args.txt'), 'utf8').split('\n').includes('--resume'), 'the reopened chat resumes its session')
 
   // At most 10 chats are kept, the oldest go first, and any chat can be deleted.
