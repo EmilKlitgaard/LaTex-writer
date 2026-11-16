@@ -1,6 +1,16 @@
-# LaTeX Writer
+<p align="center">
+  <img src="web/public/favicon.svg" width="128" height="128" alt="LaTeX Writer icon">
+</p>
 
-A locally hosted, Overleaf-style LaTeX editor. It runs on your Mac, uses your MacTeX installation, and shows up in your browser. People on the same network can join with a passcode and edit with you live.
+<h1 align="center">LaTeX Writer</h1>
+
+<p align="center">
+  A local, Overleaf-style LaTeX editor with live PDF preview, collaboration on your network and an optional AI assistant.
+  <br>
+  <a href="https://github.com/EmilKlitgaard/LaTex-writer/releases/latest"><strong>Download for Mac or Windows</strong></a>
+</p>
+
+A locally hosted, Overleaf-style LaTeX editor. It runs on your Mac, uses your MacTeX installation, and opens in its own window or your browser. People on the same network can join with a passcode and edit with you live. It also runs on Windows ([see below](#windows)).
 
 The full design is in [SPEC.md](SPEC.md).
 
