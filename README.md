@@ -60,6 +60,8 @@ The first start installs dependencies and builds the interface, which takes a li
 
 The address is `http://localhost:4173` (the next free port is used if another program has that one).
 
+Markdown files (`.md`) in a project, such as notes and instructions, have a **Source | Preview** switch in the editor's header (⇧⌘V). Preview shows the file rendered: headings, lists and task lists, tables, quotes, code, math, images from the project, and links that open other project files. Each file remembers which one you last used. Double-click a passage in the preview to edit it in the source. The preview follows every change, including edits by others or the assistant, and the Outline lists its headings.
+
 The compile status in the top bar (the error count, or the time of a clean compile) shows and hides the Problems list under the PDF. In the Editor layout it switches to Split first and opens the list, since the list lives in the PDF pane.
 
 **Share** in the top bar (inside a project) saves the PDF to Downloads (on a guest's device: downloads it), downloads the project as a .zip, opens **Share on your network…**, and **Connect an AI app…** (see the assistant below). The theme is a three-way switch in Settings: **Auto** follows the Mac's light or dark appearance, or choose **Light** or **Dark**.
