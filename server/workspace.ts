@@ -7,6 +7,7 @@ import { HttpError, INTERNAL_DIR, sanitizeFolderName, validateEntryName } from '
 import { readProjectSettings, writeProjectSettings } from './project.ts'
 import { PROJECT_NOTES_FILE, PROJECT_NOTES_STARTER } from './notes.ts'
 import { renderTemplate, TEMPLATES, type TemplateId } from './templates.ts'
+import { chooseFolderWindows, chooseForAttachmentWindows, FILE_MANAGER, IS_WINDOWS, moveToRecycleBin } from './platform.ts'
 
 function requireDir(input: unknown): string {
   if (typeof input !== 'string' || !path.isAbsolute(input)) throw new HttpError(400, 'A folder path is required')
@@ -96,9 +97,10 @@ let finderDialogOpen = false
  * or null if the user cancelled.
  */
 export function chooseFolderInFinder(startInput?: unknown): Promise<string | null> {
-  if (finderDialogOpen) throw new HttpError(409, 'The Finder dialog is already open. Look for it behind this window.')
+  if (finderDialogOpen) throw new HttpError(409, `The ${FILE_MANAGER} dialog is already open. Look for it behind this window.`)
   const start = typeof startInput === 'string' && path.isAbsolute(startInput) ? nearestExistingDir(startInput) : os.homedir()
   finderDialogOpen = true
+  if (IS_WINDOWS) return chooseFolderWindows(start, 'Choose the folder that holds your LaTeX projects').finally(() => void (finderDialogOpen = false))
   return new Promise((resolve, reject) => {
     execFile(
       '/usr/bin/osascript',
@@ -131,11 +133,12 @@ export function chooseFolderInFinder(startInput?: unknown): Promise<string | nul
  * attaching files to an assistant conversation. Returns the chosen paths; empty if cancelled.
  */
 export function chooseForAttachment(kindInput: unknown, startInput?: unknown): Promise<string[]> {
-  if (finderDialogOpen) throw new HttpError(409, 'The Finder dialog is already open. Look for it behind this window.')
+  if (finderDialogOpen) throw new HttpError(409, `The ${FILE_MANAGER} dialog is already open. Look for it behind this window.`)
   const kind = kindInput === 'folder' ? 'folder' : 'file'
   const start = typeof startInput === 'string' && path.isAbsolute(startInput) ? nearestExistingDir(startInput) : os.homedir()
   const prompt = kind === 'folder' ? 'Choose folders the assistant may read in this conversation' : 'Choose files the assistant may read in this conversation'
   finderDialogOpen = true
+  if (IS_WINDOWS) return chooseForAttachmentWindows(kind, start, prompt).finally(() => void (finderDialogOpen = false))
   return new Promise((resolve, reject) => {
     execFile(
       '/usr/bin/osascript',
@@ -226,6 +229,7 @@ export function createProject(wsInput: unknown, nameInput: unknown, templateInpu
 export async function trashProject(input: unknown): Promise<void> {
   const dir = requireDir(input)
   if (!fs.existsSync(path.join(dir, INTERNAL_DIR, 'project.json'))) throw new HttpError(400, 'That folder is not a LaTeX Writer project')
+  if (IS_WINDOWS) return moveToRecycleBin(dir)
   const trash = path.join(os.homedir(), '.Trash')
   const base = path.basename(dir)
   const stamp = new Date().toTimeString().slice(0, 8).replace(/:/g, '.')

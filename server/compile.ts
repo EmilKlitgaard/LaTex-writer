@@ -5,9 +5,10 @@ import path from 'node:path'
 import { getConfig, SCRATCH_DIR } from './config.ts'
 import { parseBibLog, parseTexLog, type LogEntry } from './logparser.ts'
 import { isHiddenName } from './paths.ts'
+import { detachedGroup, killTree, texBinDirs, withPath } from './platform.ts'
 
 const COMPILE_TIMEOUT_MS = 60_000
-const TEX_BIN_DIRS = ['/Library/TeX/texbin', '/usr/local/texlive/2024/bin/universal-darwin', '/opt/homebrew/bin', '/usr/local/bin']
+const TEX_BIN_DIRS = texBinDirs()
 
 export type Engine = 'pdflatex' | 'xelatex' | 'lualatex'
 
@@ -34,8 +35,7 @@ export type CompilerHooks = {
 export function texEnv(): NodeJS.ProcessEnv {
   const extra = TEX_BIN_DIRS.filter((d) => fs.existsSync(d))
   return {
-    ...process.env,
-    PATH: [...extra, process.env.PATH ?? ''].join(':'),
+    ...withPath(process.env, extra),
     // Unwrapped log lines make the log parseable.
     max_print_line: '10000',
     error_line: '254',
@@ -159,7 +159,7 @@ export class Compiler {
     const child = this.child
     if (child?.pid) {
       try {
-        process.kill(-child.pid, 'SIGKILL')
+        killTree(child)
       } catch {
         child.kill('SIGKILL')
       }
@@ -229,7 +229,7 @@ export class Compiler {
     let output = ''
     let timedOut = false
     let spawnError: Error | null = null
-    const child = spawn('latexmk', args, { cwd: this.buildDir, env: texEnv(), detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn('latexmk', args, { cwd: this.buildDir, env: texEnv(), detached: detachedGroup, stdio: ['ignore', 'pipe', 'pipe'] })
     this.child = child
     const collect = (chunk: Buffer): void => {
       if (output.length < 200_000) output += chunk.toString('utf8')

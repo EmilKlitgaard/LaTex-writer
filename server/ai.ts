@@ -10,6 +10,7 @@ import { INSTRUCTIONS, MCP_SERVER_NAME } from './mcp.ts'
 import { HttpError, INTERNAL_DIR } from './paths.ts'
 import { BIN_DIRS, findClaudeCli, provider, type ProviderId } from './providers.ts'
 import { expandCommand, skillCatalog } from './skills.ts'
+import { withPath } from './platform.ts'
 
 export { findClaudeCli }
 
@@ -691,12 +692,12 @@ export class AiChat {
 
     // A clean environment: an API key or a parent agent session must not leak in, or the request
     // would be billed to the API or behave like a nested session.
-    const env: NodeJS.ProcessEnv = {}
+    let env: NodeJS.ProcessEnv = {}
     for (const [key, value] of Object.entries(process.env)) {
       if (/^(ANTHROPIC_|CLAUDE|MCP_|OPENAI_API_KEY|CODEX_SANDBOX|CODEX_THREAD)/.test(key)) continue
       env[key] = value
     }
-    env.PATH = [...BIN_DIRS, env.PATH ?? '/usr/bin:/bin'].join(':')
+    env = withPath(env, BIN_DIRS)
     // A tool call can wait for the user (permission to read another project): give it time.
     if (!codex) env.MCP_TOOL_TIMEOUT = '600000'
 

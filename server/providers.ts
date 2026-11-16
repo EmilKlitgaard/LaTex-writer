@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { exeName, IS_WINDOWS } from './platform.ts'
 
 /**
  * The assistants the chat can run: command-line agents already installed and signed in on this
@@ -24,20 +25,27 @@ export type ProviderInfo = {
   mcpCommand: (url: string) => string
 }
 
-export const BIN_DIRS = ['/opt/homebrew/bin', '/usr/local/bin', path.join(os.homedir(), '.local/bin'), path.join(os.homedir(), '.claude/local')]
+export const BIN_DIRS = IS_WINDOWS
+  ? [path.join(os.homedir(), '.local', 'bin'), path.join(os.homedir(), '.claude', 'local')]
+  : ['/opt/homebrew/bin', '/usr/local/bin', path.join(os.homedir(), '.local/bin'), path.join(os.homedir(), '.claude/local')]
 
 const isExecutable = (p: string): boolean => {
   try {
-    fs.accessSync(p, fs.constants.X_OK)
+    // Windows has no execute bit; a file is enough there.
+    if (!IS_WINDOWS) fs.accessSync(p, fs.constants.X_OK)
     return fs.statSync(p).isFile()
   } catch {
     return false
   }
 }
 
+/**
+ * A program on the PATH. On Windows only a real .exe counts: an npm-installed .cmd wrapper cannot
+ * be started without a shell, so install the agents with their own installers there.
+ */
 function onPath(name: string): string | null {
-  for (const dir of [...(process.env.PATH ?? '').split(':'), ...BIN_DIRS]) {
-    if (dir && isExecutable(path.join(dir, name))) return path.join(dir, name)
+  for (const dir of [...(process.env.PATH ?? '').split(path.delimiter), ...BIN_DIRS]) {
+    if (dir && isExecutable(path.join(dir, exeName(name)))) return path.join(dir, exeName(name))
   }
   return null
 }

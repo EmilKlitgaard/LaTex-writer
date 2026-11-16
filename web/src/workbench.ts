@@ -8,6 +8,7 @@ import { FileTree } from './filetree.ts'
 import { parseOutline, type OutlineItem } from './latex.ts'
 import { LogPanel } from './logpanel.ts'
 import { PdfView } from './pdfview.ts'
+import { OS } from './app.ts'
 
 export type WorkbenchHooks = {
   /** Host: back to the project list. */
@@ -477,7 +478,7 @@ export function mountWorkbench(root: HTMLElement, hooks: WorkbenchHooks): () => 
     try {
       const res = await api<{ file: string; name: string }>('POST', '/api/host/export', {})
       toast(`Saved to Downloads as "${res.name}"`, 'success', 7000, {
-        label: 'Show in Finder',
+        label: `Show in ${OS.fileManager}`,
         onclick: () => void api('POST', '/api/host/reveal', { path: res.file }).catch(() => {}),
       })
     } catch (err) {

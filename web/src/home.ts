@@ -2,6 +2,7 @@ import { api, q, type Sharing } from './api.ts'
 import { app } from './app.ts'
 import { leaveProject, openSettingsDialog } from './dialogs.ts'
 import { clear, closeOverlays, confirmDialog, h, icon, iconButton, openModal, promptDialog, showMenu, store, timeAgo, toast } from './dom.ts'
+import { OS } from './app.ts'
 
 type Recent = { path: string; name: string; lastOpened: number; exists: boolean }
 type Home = { hostName: string; recentWorkspaces: Recent[]; sharing: Sharing }
@@ -140,19 +141,19 @@ export function mountHome(root: HTMLElement): () => void {
           const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
           showMenu(r.right - 190, r.bottom + 2, [
             { label: 'Open', onclick: () => void openProject(p.path, ws.path) },
-            { label: 'Show in Finder', onclick: () => void api('POST', '/api/host/reveal', { path: p.path }).catch(fail) },
+            { label: `Show in ${OS.fileManager}`, onclick: () => void api('POST', '/api/host/reveal', { path: p.path }).catch(fail) },
             'separator',
-            { label: 'Move to Trash', icon: 'trash', danger: true, onclick: async () => {
+            { label: `Move to ${OS.trash}`, icon: 'trash', danger: true, onclick: async () => {
               const ok = await confirmDialog({
-                title: 'Move project to Trash',
-                message: `Move "${p.name}" and all its files to the macOS Trash? You can put it back from the Trash.`,
-                confirmLabel: 'Move to Trash',
+                title: `Move project to ${OS.trash}`,
+                message: `Move "${p.name}" and all its files to the ${OS.trash}? You can put it back from the ${OS.trash}.`,
+                confirmLabel: `Move to ${OS.trash}`,
                 danger: true,
               })
               if (!ok) return
               try {
                 if ((await leaveProject((force) => api('POST', '/api/host/project/trash', { path: p.path, force }))) === null) return
-                toast(`"${p.name}" was moved to the Trash`, 'info')
+                toast(`"${p.name}" was moved to the ${OS.trash}`, 'info')
                 void showWorkspace(ws.path)
               } catch (err) {
                 fail(err)
@@ -210,11 +211,11 @@ export function mountHome(root: HTMLElement): () => void {
 
   /** A button that opens the normal macOS folder dialog on this Mac. */
   function finderButton(start: () => string | undefined, onChosen: (path: string) => void): HTMLButtonElement {
-    const label = h('span', null, 'Choose in Finder…')
-    const button = h('button', { class: 'btn btn-primary', type: 'button', title: 'Open the macOS folder dialog' }, icon('folder'), label)
+    const label = h('span', null, OS.windows ? 'Choose folder…' : 'Choose in Finder…')
+    const button = h('button', { class: 'btn btn-primary', type: 'button', title: 'Open the folder dialog' }, icon('folder'), label)
     button.addEventListener('click', async () => {
       button.disabled = true
-      label.textContent = 'Waiting for Finder…'
+      label.textContent = `Waiting for ${OS.fileManager}…`
       try {
         const res = await api<{ path: string | null }>('POST', '/api/host/choose-folder', { start: start() })
         if (res.path) onChosen(res.path)
@@ -222,7 +223,7 @@ export function mountHome(root: HTMLElement): () => void {
         fail(err)
       } finally {
         button.disabled = false
-        label.textContent = 'Choose in Finder…'
+        label.textContent = OS.windows ? 'Choose folder…' : 'Choose in Finder…'
       }
     })
     return button
@@ -272,7 +273,7 @@ export function mountHome(root: HTMLElement): () => void {
         for (const s of b.shortcuts) shortcuts.appendChild(h('button', { class: 'picker-shortcut', type: 'button', onclick: () => void go(s.path) }, icon('folder'), s.name))
       }
       clear(list)
-      if (b.denied) list.appendChild(h('p', { class: 'muted pad' }, 'macOS did not allow reading this folder. Allow access for Terminal in System Settings → Privacy & Security → Files and Folders.'))
+      if (b.denied) list.appendChild(h('p', { class: 'muted pad' }, OS.windows ? 'Windows did not allow reading this folder.' : 'macOS did not allow reading this folder. Allow access for Terminal in System Settings → Privacy & Security → Files and Folders.'))
       else if (!b.entries.length) list.appendChild(h('p', { class: 'muted pad' }, 'No sub-folders here.'))
       for (const e of b.entries) {
         list.appendChild(h('button', { class: 'picker-row', type: 'button', onclick: () => void go(e.path) },

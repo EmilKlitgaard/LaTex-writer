@@ -16,6 +16,22 @@ Or download the `.dmg`, drag both apps to Applications, and open LaTeX Writer. T
 
 You need macOS 12 or later, [Node.js](https://nodejs.org) 24 or newer and [MacTeX](https://tug.org/mactex). The first start downloads what LaTeX Writer needs, which takes a minute or two.
 
+### Windows
+
+The same release has **LaTeX-Writer-<version>-Windows.zip**. Unzip it and double-click **Start LaTeX Writer.bat**. The editor opens in your browser (there is no app on Windows), and closing the black window stops it. You need [Node.js](https://nodejs.org) 24 or newer and [MiKTeX](https://miktex.org) or TeX Live. From a clone of this repository, run `scripts\windows\Start LaTeX Writer.bat`.
+
+Windows support started from [Lukas4314's port](https://github.com/Lukas4314/LaTex-writer). It is the same code: everything that differs between macOS and Windows sits in `server/platform.ts` (folder and file dialogs, the Recycle Bin, opening a browser, TeX and agent paths, stopping a compile). The interface's words for the computer are in `OS` in `web/src/app.ts`. The Mac is where it is built and tested; Windows is untested by the maintainer, so fixes are welcome. To bring in someone's Windows changes, compare their fork with the commit it started from and port the difference into `server/platform.ts`:
+
+```bash
+git remote add lukas https://github.com/Lukas4314/LaTex-writer.git
+```
+
+```bash
+git fetch lukas && git diff $(git merge-base main lukas/main) lukas/main
+```
+
+The assistant needs Claude Code or Codex installed as a real `.exe` (their own Windows installers): an npm-installed `.cmd` wrapper is not found. Not on Windows: the Mac apps, iCloud downloads, and the macOS folder-permission hints.
+
 ## Start it (from this folder)
 
 Three ways, all running the same server, so projects, settings and chats are shared:
@@ -142,7 +158,7 @@ scripts/release.sh --dry-run
 scripts/release.sh
 ```
 
-The dry run builds everything and checks it: both apps in the DMG and the zip, valid signatures, and matching checksums. The second command does the same from a clean, pushed `main`, then tags `v<version>` (the version from `package.json`; raise it in `package.json` and `package-lock.json` first) and publishes the release with the DMG, the zip, `install.sh` and `SHA256SUMS.txt`. The release apps carry a copy of LaTeX Writer (the files git tracks, without tests) inside them. On the first start, and after an update, that copy goes to `~/Library/Application Support/LaTeXWriter/app`, where `launch.sh` installs the dependencies and builds the interface, as it does for this folder.
+The dry run builds everything and checks it: both apps in the DMG and the zip, valid signatures, and matching checksums. The second command does the same from a clean, pushed `main`, then tags `v<version>` (the version from `package.json`; raise it in `package.json` and `package-lock.json` first) and publishes the release with the DMG, the zip, the Windows zip, `install.sh` and `SHA256SUMS.txt`. The release apps carry a copy of LaTeX Writer (the files git tracks, without tests) inside them. On the first start, and after an update, that copy goes to `~/Library/Application Support/LaTeXWriter/app`, where `launch.sh` installs the dependencies and builds the interface, as it does for this folder.
 
 ## Security notes
 
