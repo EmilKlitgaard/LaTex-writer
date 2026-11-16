@@ -784,8 +784,8 @@ export class AiPanel {
       this.listEl.append(h('div', { class: 'ai-empty' },
         h('p', { class: 'muted' }, 'Ask for changes to the document. Every change shows up below for you to accept or decline.'),
         h('div', { class: 'ai-suggestions' }, SUGGESTIONS.map((s) => h('button', { class: 'ai-suggestion', type: 'button', onclick: () => void this.send(s) }, s))),
-        app.ai?.skills?.length
-          ? h('p', { class: 'muted ai-skill-hint' }, 'Writing skills: ', ...app.ai.skills.flatMap((s, i) => [
+        app.ai?.skills?.some((s) => !s.command)
+          ? h('p', { class: 'muted ai-skill-hint' }, 'Writing skills: ', ...app.ai.skills.filter((s) => !s.command).flatMap((s, i) => [
             i ? ' ' : '',
             h('button', { class: 'ai-skill-chip', type: 'button', title: s.description, onclick: () => this.pickSkill(s) }, `/${s.name}`),
           ]))

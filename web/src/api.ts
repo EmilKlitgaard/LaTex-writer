@@ -35,7 +35,8 @@ export type ChatPart =
 export type ChatMessage = { id: string; role: 'user' | 'assistant'; parts: ChatPart[]; error?: string; t: number }
 export type ChatSummary = { id: string; title: string; t: number; active: boolean }
 export type ChatContext = { file?: string; line?: number; selection?: string; selectionStart?: number; selectionEnd?: number }
-export type SkillInfo = { name: string; description: string; hint: string }
+/** A /command in the chat: a skill, or (command) one the app carries out itself, like /compact. */
+export type SkillInfo = { name: string; description: string; hint: string; command?: boolean }
 export type AiProvider = { id: string; name: string; plan: string; available: boolean; path: string | null; mcpCommand: string }
 export type AiSettings = {
   enabled: boolean
