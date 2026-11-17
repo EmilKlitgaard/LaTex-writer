@@ -48,3 +48,12 @@ test('/compact is offered in the menu as a command, not a skill', () => {
   assert.ok(menu.filter((m) => !m.command).every((m) => findSkill(m.name)))
   assert.equal(findSkill('compact'), undefined)
 })
+
+test('every agent gets the read-only chat rules, which describe what the sidebar renders', () => {
+  for (const id of ['claude', 'codex'] as const) {
+    const prompt = systemPrompt(id)
+    assert.match(prompt, /<chat-rules>\n# How to write in the chat[\s\S]*```choices[\s\S]*<\/chat-rules>$/)
+    assert.match(prompt, /\$\$ \.\.\. \$\$/, 'display math')
+    assert.match(prompt, /sections\/method\.tex:42/, 'file references')
+  }
+})
