@@ -21,7 +21,13 @@ if %NODE_MAJOR% LSS 24 (
 where latexmk >nul 2>nul
 if errorlevel 1 echo Note: latexmk was not found on the PATH. Install MiKTeX from https://miktex.org or TeX Live to compile documents.
 
-rem Dependencies: on the first start, and again whenever package-lock.json changes.
+rem Dependencies: on the first start, and again whenever they change. A lock file that differs only
+rem in LaTeX Writer's own version (every update) needs no install.
+fc /b package-lock.json node_modules\.lw-package-lock.json >nul 2>nul
+if errorlevel 1 if exist node_modules\.lw-package-lock.json (
+  node scripts\same-deps.mjs package-lock.json node_modules\.lw-package-lock.json
+  if not errorlevel 1 copy /y package-lock.json node_modules\.lw-package-lock.json >nul
+)
 fc /b package-lock.json node_modules\.lw-package-lock.json >nul 2>nul
 if errorlevel 1 (
   echo Installing what LaTeX Writer needs. The first start takes a minute or two...

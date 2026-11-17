@@ -42,11 +42,16 @@ fi
 mkdir -p "$DEPS"
 cd "$SRC"
 
-# Install dependencies on first run, and again whenever package-lock.json changes.
+# Install dependencies on first run, and again whenever they change. A lock file that differs only
+# in LaTeX Writer's own version (every update) is just copied over: nothing to install.
 if [ ! -d "$DEPS/node_modules" ] || ! cmp -s package-lock.json "$DEPS/package-lock.json"; then
-  echo "Installing dependencies (first run, or they changed)..."
-  cp package.json package-lock.json "$DEPS/"
-  (cd "$DEPS" && npm ci --no-audit --no-fund)
+  if [ -d "$DEPS/node_modules" ] && node scripts/same-deps.mjs package-lock.json "$DEPS/package-lock.json"; then
+    cp package.json package-lock.json "$DEPS/"
+  else
+    echo "Installing dependencies (first run, or they changed)..."
+    cp package.json package-lock.json "$DEPS/"
+    (cd "$DEPS" && npm ci --no-audit --no-fund)
+  fi
 fi
 # The source folder only holds a link, so iCloud never syncs node_modules.
 if [ "$(readlink node_modules 2>/dev/null || true)" != "$DEPS/node_modules" ]; then
