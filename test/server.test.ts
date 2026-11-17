@@ -643,6 +643,17 @@ test('assistant edits are live but pending; each change can be accepted or decli
   await host('POST', '/api/host/review/accept', {})
 })
 
+test('writing a Markdown file reports math left outside dollar signs, so the agent can fix it', async () => {
+  const created = (await tool('write_file', { path: 'derivation.md', content: '# Derivation\n\nThe angle Theta_lenght grows as x^2.\n', compile: false })).content[0].text
+  assert.match(created, /Created derivation\.md[\s\S]*Math outside \$\.\.\.\$ in derivation\.md[\s\S]*line 3: "Theta_lenght", "x\^2"/)
+  // Fixed: no note, and the line that was already there is not reported again by a later edit.
+  const fixed = (await tool('edit_file', { path: 'derivation.md', old_text: 'Theta_lenght grows as x^2', new_text: '$\\Theta_{\\text{length}}$ grows as $x^2$', compile: false })).content[0].text
+  assert.doesNotMatch(fixed, /Math outside/)
+  const tex = (await tool('edit_file', { path: 'main.tex', old_text: '\\section{Introduction}', new_text: '\\section{Introduction} x_1', compile: false })).content[0].text
+  assert.doesNotMatch(tex, /Math outside/, 'only Markdown files are checked')
+  for (const path of ['derivation.md', 'main.tex']) assert.equal((await host('POST', '/api/host/review/decline', { path })).status, 200)
+})
+
 test('the assistant can compile and read the result as text or as a page image', async () => {
   const c = await tool('compile')
   assert.equal(c.isError, undefined)
