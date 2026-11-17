@@ -19,6 +19,9 @@ const MAX_CANVAS_PIXELS = 16_000_000
 const MAX_RENDERED = 14
 const ZOOM_STEPS = [0.5, 0.67, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4]
 
+/** A rectangle on a page, in points from its top-left. */
+type Box = { left: number; top: number; right: number; bottom: number }
+
 type Slot = {
   index: number
   wrapper: HTMLElement
@@ -315,22 +318,87 @@ export class PdfView {
   }
 
   /** Scrolls to a spot (PDF points from the top-left of the page) and flashes a marker there. */
-  highlight(page: number, x: number, y: number, width: number, height: number): void {
+  /**
+   * Flashes a box from SyncTeX (x: left edge, y: baseline, in points from the page's top-left) and
+   * scrolls to it. SyncTeX gives an image its natural size, not the size it is drawn at, so a box
+   * that starts at the corner of a picture or included PDF graphic flashes that graphic instead.
+   */
+  async highlight(page: number, x: number, y: number, width: number, height: number): Promise<void> {
     const slot = this.slots[page - 1]
     if (!slot) return
-    const top = (y - Math.max(height, 8)) * this.scale
+    const generation = this.generation
+    const graphic = (await this.graphicsOn(page).catch(() => [] as Box[]))
+      .find((g) => Math.abs(g.left - x) < 2 && Math.abs(g.bottom - y) < 2)
+    if (generation !== this.generation || this.slots[page - 1] !== slot) return
+    const pageSize = slot.size ?? this.defaultSize
+    const box = graphic ?? { left: x, top: y - Math.max(height, 8), right: x + Math.max(width, 30), bottom: y }
+    // Never past the page's edges: a little room around the box, as far as the page allows.
+    const pad = 3
+    const left = Math.max(0, box.left * this.scale - pad)
+    const top = Math.max(0, box.top * this.scale - pad)
+    const right = Math.min(pageSize.width * this.scale, box.right * this.scale + pad)
+    const bottom = Math.min(pageSize.height * this.scale, box.bottom * this.scale + pad)
     const marker = h('div', {
       class: 'pdf-highlight',
-      style: {
-        left: `${Math.max(0, x * this.scale - 4)}px`,
-        top: `${top - 3}px`,
-        width: `${Math.max(width * this.scale, 40) + 8}px`,
-        height: `${Math.max(height, 8) * this.scale + 6}px`,
-      },
+      style: { left: `${left}px`, top: `${top}px`, width: `${Math.max(8, right - left)}px`, height: `${Math.max(8, bottom - top)}px` },
     })
     slot.wrapper.appendChild(marker)
-    this.scrollSmoothly(() => slot.wrapper.offsetTop + top - this.element.clientHeight / 3)
+    // A box taller than a third of the view is shown from its top; a line sits a third of the way down.
+    this.scrollSmoothly(() => slot.wrapper.offsetTop + top - Math.max(16, this.element.clientHeight / 3 - Math.max(0, bottom - top) / 2))
     setTimeout(() => marker.remove(), 2200)
+  }
+
+  private graphics = new Map<string, Promise<Box[]>>()
+
+  /** Where a page draws pictures and included graphics, in points from its top-left. */
+  private graphicsOn(page: number): Promise<Box[]> {
+    const key = `${this.generation}:${page}`
+    let found = this.graphics.get(key)
+    if (!found) {
+      if (this.graphics.size > 50) this.graphics.clear()
+      found = this.findGraphics(page)
+      this.graphics.set(key, found)
+    }
+    return found
+  }
+
+  private async findGraphics(page: number): Promise<Box[]> {
+    if (!this.pdf) return []
+    const proxy = await this.pdf.getPage(page)
+    const { fnArray, argsArray } = await proxy.getOperatorList()
+    const OPS = pdfjs.OPS
+    // From PDF space (origin bottom-left) to points from the top-left.
+    const base = proxy.getViewport({ scale: 1 }).transform as number[]
+    let ctm = [1, 0, 0, 1, 0, 0]
+    const stack: number[][] = []
+    let forms = 0
+    const boxes: Box[] = []
+    const record = (x1: number, y1: number, x2: number, y2: number): void => {
+      const m = pdfjs.Util.transform(base, ctm)
+      const pts = [[x1, y1], [x2, y1], [x1, y2], [x2, y2]].map(([px, py]) => [m[0] * px + m[2] * py + m[4], m[1] * px + m[3] * py + m[5]])
+      const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1])
+      boxes.push({ left: Math.min(...xs), right: Math.max(...xs), top: Math.min(...ys), bottom: Math.max(...ys) })
+    }
+    for (let i = 0; i < fnArray.length; i++) {
+      const fn = fnArray[i], args = argsArray[i] as any[]
+      if (fn === OPS.save) stack.push(ctm)
+      else if (fn === OPS.restore) ctm = stack.pop() ?? ctm
+      else if (fn === OPS.transform) ctm = pdfjs.Util.transform(ctm, args)
+      else if (fn === OPS.paintImageXObject || fn === OPS.paintInlineImageXObject || fn === OPS.paintImageMaskXObject) {
+        if (!forms) record(0, 0, 1, 1)
+      } else if (fn === OPS.paintFormXObjectBegin) {
+        // An included PDF graphic is a form: its bounding box, where it is placed, is the graphic.
+        stack.push(ctm)
+        if (Array.isArray(args[0])) ctm = pdfjs.Util.transform(ctm, args[0])
+        const bbox = args[1]
+        if (!forms && Array.isArray(bbox) && bbox.length === 4) record(bbox[0], bbox[1], bbox[2], bbox[3])
+        forms++
+      } else if (fn === OPS.paintFormXObjectEnd) {
+        ctm = stack.pop() ?? ctm
+        forms = Math.max(0, forms - 1)
+      }
+    }
+    return boxes
   }
 
   // ---- links ----------------------------------------------------------------------

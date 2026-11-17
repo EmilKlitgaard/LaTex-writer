@@ -4,7 +4,7 @@ import { bracketMatching, HighlightStyle, indentOnInput, indentUnit, StreamLangu
 import { stex } from '@codemirror/legacy-modes/mode/stex'
 import { lintGutter, setDiagnostics, type Diagnostic } from '@codemirror/lint'
 import { highlightSelectionMatches, search, searchKeymap } from '@codemirror/search'
-import { EditorState, StateEffect, StateField, type Extension, type Range } from '@codemirror/state'
+import { EditorSelection, EditorState, StateEffect, StateField, type Extension, type Range } from '@codemirror/state'
 import {
   Decoration, drawSelection, dropCursor, EditorView, highlightActiveLine, highlightActiveLineGutter, highlightSpecialChars, keymap, lineNumbers,
   type DecorationSet,
@@ -16,6 +16,8 @@ import * as Y from 'yjs'
 import { api, q, type ChatContext, type Hunk, type LogEntry, type ProjectIndex, type User } from './api.ts'
 import { debounce, h } from './dom.ts'
 import { latexCompletions, latexKeymap } from './latex.ts'
+
+const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)
 
 const CLOSE_STALE = 4001
 
@@ -158,6 +160,19 @@ export class CodeEditor {
         ...defaultKeymap,
         indentWithTab,
       ]),
+      // ⌘-double-click (Ctrl on Windows) on a word shows it in the PDF, like ⌘J with the cursor there.
+      EditorView.domEventHandlers({
+        dblclick: (e, view) => {
+          if (!(IS_MAC ? e.metaKey : e.ctrlKey)) return false
+          const pos = view.posAtCoords({ x: e.clientX, y: e.clientY })
+          if (pos === null) return false
+          // The modifier made the clicks add cursors: keep one, on the word that was clicked.
+          const word = view.state.wordAt(pos)
+          view.dispatch({ selection: word ? EditorSelection.single(word.from, word.to) : EditorSelection.single(pos) })
+          this.callbacks.onJumpToPdf()
+          return true
+        },
+      }),
       EditorView.updateListener.of((update) => {
         if (update.docChanged) notify(update.state.doc.toString())
         if (update.selectionSet) selectionMoved()

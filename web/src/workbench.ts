@@ -73,7 +73,7 @@ export function mountWorkbench(root: HTMLElement, hooks: WorkbenchHooks): () => 
     onSelectionChange: () => aiPanel?.updateContext(),
   })
   const fileTitle = h('span', { class: 'pane-title' }, 'No file open')
-  const showInPdfBtn = iconButton('target', 'Show this place in the PDF (⌘J)', () => void showInPdf())
+  const showInPdfBtn = iconButton('target', 'Show this place in the PDF (⌘J, or ⌘-double-click a word)', () => void showInPdf())
   const binaryView = h('div', { class: 'binary-view', hidden: true })
 
   // A Markdown file can be read rendered: the Source / Preview switch in the editor's header.
@@ -416,7 +416,7 @@ export function mountWorkbench(root: HTMLElement, hooks: WorkbenchHooks): () => 
       if (!res.position) return toast('That line is not in the PDF. Compile first, or check that the file is included.', 'info')
       showViewer()
       setNarrowView('pdf')
-      pdfView.highlight(res.position.page, res.position.h, res.position.v, res.position.width, res.position.height)
+      void pdfView.highlight(res.position.page, res.position.h, res.position.v, res.position.width, res.position.height)
     } catch (err) {
       toast((err as Error).message, 'error')
     }
