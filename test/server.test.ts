@@ -1127,7 +1127,7 @@ echo '{"type":"turn.completed","usage":{"input_tokens":1234,"cached_input_tokens
   delete process.env.OPENAI_API_KEY
 })
 
-test('leaving a project while the assistant works in it asks first', async () => {
+test('leaving a project or starting a new chat while the assistant works asks first', async () => {
   // A stand-in that takes its time, so the assistant is still busy.
   const cli = path.join(HOME, 'bin', 'claude')
   const original = fs.readFileSync(cli, 'utf8')
@@ -1150,6 +1150,19 @@ test('leaving a project while the assistant works in it asks first', async () =>
     assert.equal(currentProject()?.root, fs.realpathSync(projectDir), 'still in the project')
     // Reopening the project that is already open is not leaving it.
     assert.equal((await host('POST', '/api/host/project/open', { path: projectDir, workspace: WORKSPACE })).status, 200)
+    const activeId = (await state()).chat.activeId
+    const reset = await host('POST', '/api/host/ai/reset', { force: false })
+    assert.equal(reset.status, 409)
+    assert.equal(reset.json.code, 'assistant-busy')
+    const running = (await state()).chat
+    assert.equal(running.activeId, activeId)
+    assert.equal(running.busy, true)
+
+    assert.equal((await host('POST', '/api/host/ai/reset', { force: true })).status, 200)
+    const fresh = (await state()).chat
+    assert.notEqual(fresh.activeId, activeId)
+    assert.deepEqual(fresh.messages, [])
+    assert.ok(fresh.chats.some((c: { id: string }) => c.id === activeId))
   } finally {
     await host('POST', '/api/host/ai/stop', {})
     await until(async () => !(await state()).chat.busy, 'the assistant to stop')
