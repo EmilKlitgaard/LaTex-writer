@@ -65,6 +65,10 @@ Memory (two Markdown files; project_info and read_notes show both):
 Other projects and attached files (read-only):
 - The user can attach files and folders to a conversation; you are told their paths. Read them by
   passing the path as source to project_info, read_file and search.
+- For PDFs in the project, pass their project-relative path to read_pdf_text or view_page.
+  For a directly attached PDF, pass its attachment path as source and omit path.
+  For a PDF in an attached folder or allowed project, pass source and a path relative to it.
+  Use view_page for scans and diagrams.
 - Other projects in the same folder can be read only with the user's permission. list_sources shows
   them. Ask with request_access only when the task needs one (for example "set this up like my
   exercise 1"), once per project; the answer lasts until the user takes it back.
@@ -85,6 +89,11 @@ const int = (description: string): Record<string, unknown> => ({ type: 'integer'
 const bool = (description: string): Record<string, unknown> => ({ type: 'boolean', description })
 const readOnly = { readOnlyHint: true }
 
+const pdfFileProperties = {
+  path: str('PDF path relative to the project or source. Omit for a directly attached PDF or to use the compiled PDF when no source is given.'),
+  source: str('Attachment path or allowed project folder name. See list_sources.'),
+}
+
 export const TOOLS: Tool[] = [
   {
     name: 'project_info',
@@ -100,7 +109,7 @@ export const TOOLS: Tool[] = [
   },
   {
     name: 'read_file',
-    description: 'Read a text file of the project (the live text, including unsaved edits). Give a line range for large files.',
+    description: 'Read a text file (including live project edits) or extract the first three pages of a PDF. Use read_pdf_text for other PDF pages and view_page for scans.',
     inputSchema: {
       type: 'object',
       properties: { path: str('Project-relative path, e.g. "main.tex" or "chapters/intro.tex" (relative to the source when source is given)'), start_line: int('First line to return (1-based)'), end_line: int('Last line to return'), source: str('Read from another project (its folder name) or an attached file or folder (its path) instead of this project. See list_sources.') },
@@ -187,16 +196,17 @@ export const TOOLS: Tool[] = [
   },
   {
     name: 'read_pdf_text',
-    description: 'The text of the compiled PDF. With query: only the lines containing it, with page numbers, across the whole PDF. Without: the full text of a page range.',
-    inputSchema: { type: 'object', properties: { query: str('Text to find in the PDF'), first_page: int('First page (default 1)'), last_page: int('Last page (default: first_page + 2)') } },
+    description: 'The text of a project PDF, attached PDF, or the compiled PDF by default. With query: only the lines containing it, with page numbers, across the whole PDF. Without: the full text of a page range.',
+    inputSchema: { type: 'object', properties: { ...pdfFileProperties, query: str('Text to find in the PDF'), first_page: int('First page (default 1)'), last_page: int('Last page (default: first_page + 2)') } },
     annotations: readOnly,
   },
   {
     name: 'view_page',
-    description: 'Images of the compiled PDF, for visual questions that check_layout cannot answer. pages: [..] (up to 8) gives one small overview image of several pages, about the cost of one page. page with from/to shows part of one page in more detail.',
+    description: 'Images of a project PDF, attached PDF, or the compiled PDF by default. Use for scans and visual questions. pages: [..] (up to 8) gives one small overview image of several pages, about the cost of one page. page with from/to shows part of one page in more detail.',
     inputSchema: {
       type: 'object',
       properties: {
+        ...pdfFileProperties,
         page: int('One page to show (1-based)'),
         pages: { type: 'array', items: { type: 'integer' }, maxItems: 8, description: 'Several pages side by side in one overview image' },
         from: { type: 'number', description: 'Top of the band to show, as a fraction of the page height (0 = top). Default 0.' },
@@ -369,6 +379,38 @@ function sourceFor(project: Project, chat: string | undefined, name: unknown): {
   throw new ToolError(`"${String(name)}" is not something you can read. Use list_sources to see what is available.`)
 }
 
+function pdfFile(project: Project, args: Record<string, unknown>, chat?: string): string {
+  if (args.source !== undefined && args.source !== '') {
+    const { source, prefix } = sourceFor(project, chat, args.source)
+    const { rel, abs } = resolveInSource(source, args.path, prefix)
+    return requirePdf(rel, abs)
+  }
+  if (args.path !== undefined) {
+    const { rel, abs } = resolveInside(project.root, args.path)
+    return requirePdf(rel, abs)
+  }
+  const pdf = project.compiler.currentPdf()
+  if (!pdf) throw new ToolError('There is no PDF yet. Compile first or specify a PDF path or attachment source.')
+  return pdf.file
+}
+
+const isPdf = (rel: string): boolean => path.extname(rel).toLowerCase() === '.pdf'
+
+function requirePdf(rel: string, abs: string): string {
+  if (!isPdf(rel) || !fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
+    throw new ToolError(`"${rel}" does not name a readable PDF file.`)
+  }
+  return abs
+}
+
+async function readPdfPages(file: string, first: number, last: number): Promise<string> {
+  const out = await extractText(file, first, last)
+  if (first > out.pages || last < first) throw new ToolError(`Invalid page range. PDF has ${plural(out.pages, 'page')}.`)
+  let body = out.text || '(these pages contain no extractable text; use view_page to inspect them)'
+  if (body.length > MAX_READ_CHARS) body = body.slice(0, MAX_READ_CHARS) + '\n[cut off: ask for fewer pages]'
+  return `PDF has ${plural(out.pages, 'page')}.\n\n${body}`
+}
+
 const sourceLabel = (s: Source): string => (s.kind === 'project' ? `project "${s.name}"` : s.kind === 'folder' ? `attached folder ${s.root}` : `attached file ${path.join(s.root, s.only!)}`)
 
 function readSourceText(source: Source, rel: string, abs: string): string {
@@ -498,6 +540,8 @@ export async function callTool(project: Project, name: string, args: Record<stri
       }
 
       case 'read_file': {
+        const { rel: requested, abs } = resolveInside(project.root, args.path)
+        if (isPdf(requested)) return text(await readPdfPages(requirePdf(requested, abs), 1, 3))
         const { rel } = requireText(project, args.path)
         const all = project.docs.read(rel).split('\n')
         const start = Math.max(1, Math.floor(Number(args.start_line) || 1))
@@ -591,27 +635,22 @@ export async function callTool(project: Project, name: string, args: Record<stri
       }
 
       case 'read_pdf_text': {
-        const pdf = project.compiler.currentPdf()
-        if (!pdf) throw new ToolError('There is no PDF yet. Compile first.')
+        const file = pdfFile(project, args, chat)
         if (typeof args.query === 'string' && args.query.trim()) {
-          const found = await searchText(pdf.file, args.query.trim())
+          const found = await searchText(file, args.query.trim())
           if (!found.total) return text(`"${args.query}" does not occur in the PDF text (${plural(found.pages, 'page')}).`)
           return text(found.hits.join('\n') + (found.total > found.hits.length ? `\n[${found.total - found.hits.length} more]` : ''))
         }
         const first = Math.max(1, Math.floor(Number(args.first_page) || 1))
         const last = Math.floor(Number(args.last_page) || first + 2)
-        const out = await extractText(pdf.file, first, last)
-        let body = out.text || '(these pages contain no text)'
-        if (body.length > MAX_READ_CHARS) body = body.slice(0, MAX_READ_CHARS) + '\n[cut off: ask for fewer pages]'
-        return text(`PDF has ${plural(out.pages, 'page')}.\n\n${body}`)
+        return text(await readPdfPages(file, first, last))
       }
 
       case 'view_page': {
-        const pdf = project.compiler.currentPdf()
-        if (!pdf) throw new ToolError('There is no PDF yet. Compile first.')
+        const file = pdfFile(project, args, chat)
         if (Array.isArray(args.pages) && args.pages.length) {
           const list = args.pages.map(Number).filter(Number.isFinite).slice(0, 8)
-          const out = await renderSheet(pdf.file, list)
+          const out = await renderSheet(file, list)
           return {
             content: [
               { type: 'text', text: `Overview of pages ${list.join(', ')} (of ${out.pages}), ${out.width}x${out.height} px. Ask for one page with from/to to see details.` },
@@ -628,7 +667,7 @@ export async function callTool(project: Project, name: string, args: Record<stri
         // A band gets more pixels per page height, so it comes out sharper for about the same cost.
         const edge = Math.min(high ? 2400 : 1600, (high ? 1400 : 1000) / Math.max(band, 0.3))
         const page = Math.floor(Number(args.page))
-        const out = await renderPage(pdf.file, page, { maxEdge: edge, from, to })
+        const out = await renderPage(file, page, { maxEdge: edge, from, to })
         const note = args.detail === 'high' && !high ? ' High detail is only given for a band of at most half the page; use from/to.' : ''
         return {
           content: [
@@ -668,6 +707,7 @@ async function callOnSource(project: Project, name: string, args: Record<string,
   if (name === 'read_file') {
     const { rel, abs } = resolveInSource(source, args.path, prefix)
     if (!rel) throw new ToolError('path is required')
+    if (isPdf(rel)) return readPdfPages(requirePdf(rel, abs), 1, 3)
     const all = readSourceText(source, rel, abs).split('\n')
     const start = Math.max(1, Math.floor(Number(args.start_line) || 1))
     const end = Math.min(all.length, Math.floor(Number(args.end_line) || all.length))

@@ -83,7 +83,7 @@ export async function extractText(file: string, firstPage = 1, lastPage = Infini
       text += item.str
       if (item.hasEOL) text += '\n'
     }
-    out.push(`--- page ${n} ---\n${text.trim()}`)
+    out.push(`--- page ${n} ---\n${text.trim() || '(no extractable text on this page; use view_page to inspect it)'}`)
   }
   return { text: out.join('\n\n'), pages: doc.numPages }
 }
