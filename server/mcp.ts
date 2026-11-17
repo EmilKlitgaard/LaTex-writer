@@ -7,6 +7,7 @@ import { describeNotes, NOTES_LIMITS, readPreferences, readProjectNotes, updateN
 import { HttpError, INTERNAL_DIR, isTextFile, resolveInside, validateEntryName } from './paths.ts'
 import { extractText, pageCount, pageGeometry, renderPage, renderSheet, searchText } from './pdfrender.ts'
 import type { Project, TreeNode } from './project.ts'
+import { markdownMathNote } from './mdmath.ts'
 import { findSkill, skillCatalog, SKILLS, skillText } from './skills.ts'
 
 // A small MCP server (JSON-RPC over HTTP POST) that lets Claude work on the open project:
@@ -24,6 +25,9 @@ const MAX_OVERWRITE_LINES = 80
 const MAX_ISSUES_LISTED = 15
 const MAX_COPY_FILES = 200
 const MAX_COPY_BYTES = 20 * 1024 * 1024
+
+/** The app's read-only rules for writing Markdown files, shared by every agent (server/markdown-rules.md). */
+const MARKDOWN_RULES = fs.readFileSync(path.join(import.meta.dirname, 'markdown-rules.md'), 'utf8').trim()
 
 export const INSTRUCTIONS = `You are working on a LaTeX project that is open in the LaTeX Writer app.
 
@@ -66,6 +70,8 @@ Other projects and attached files (read-only):
   exercise 1"), once per project; the answer lasts until the user takes it back.
 - You can never change those files. copy_file copies files from them into this project (text files
   wait for review like your edits); then adapt the copies with edit_file.
+
+${MARKDOWN_RULES}
 
 If a tool says the project open in the app has changed, stop: do nothing more and tell the user.
 
@@ -306,10 +312,11 @@ async function compileReport(project: Project, r: BuildResult): Promise<string> 
   return [head, ...shown, hidden > 0 ? `[${hidden} more; use read_log]` : ''].filter(Boolean).join('\n')
 }
 
-async function afterChange(project: Project, args: Record<string, unknown>, summary: string): Promise<ToolResult> {
-  if (args.compile === false) return text(`${summary} Not compiled yet.`)
+/** The result of a change: its summary, how the build went, then `note` (things to fix in what was written). */
+async function afterChange(project: Project, args: Record<string, unknown>, summary: string, note = ''): Promise<ToolResult> {
+  if (args.compile === false) return text(`${summary} Not compiled yet.${note}`)
   const r = await project.compile(true)
-  return text(`${summary}\n${await compileReport(project, r)}`)
+  return text(`${summary}\n${await compileReport(project, r)}${note}`)
 }
 
 type Edit = { old_text: string; new_text: string; replace_all?: boolean }
@@ -551,7 +558,7 @@ export async function callTool(project: Project, name: string, args: Record<stri
           next = e.replace_all ? next.split(e.old_text).join(e.new_text) : next.replace(e.old_text, () => e.new_text)
         })
         project.applyAssistantEdit(rel, next)
-        return await afterChange(project, args, `Edited ${rel} (${plural(edits.length, 'change')}, from line ${firstLine}). Pending the user's review.`)
+        return await afterChange(project, args, `Edited ${rel} (${plural(edits.length, 'change')}, from line ${firstLine}). Pending the user's review.`, markdownMathNote(rel, next, original))
       }
 
       case 'write_file': {
@@ -566,8 +573,9 @@ export async function callTool(project: Project, name: string, args: Record<stri
         } else if (!fs.existsSync(path.dirname(abs))) {
           fs.mkdirSync(path.dirname(abs), { recursive: true })
         }
+        const before = existed ? project.docs.read(rel) : ''
         project.applyAssistantEdit(rel, args.content)
-        return await afterChange(project, args, `${existed ? 'Replaced' : 'Created'} ${rel}. Pending the user's review.`)
+        return await afterChange(project, args, `${existed ? 'Replaced' : 'Created'} ${rel}. Pending the user's review.`, markdownMathNote(rel, args.content, before))
       }
 
       case 'compile': {
