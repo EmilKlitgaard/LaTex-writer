@@ -204,8 +204,9 @@ export class AiPanel {
         }
       },
       oninput: () => {
-        this.autosize()
+        // The menu first: it must open even if anything after it fails.
         this.updateSlash()
+        this.autosize()
       },
       onscroll: () => (this.inputMirror.scrollTop = this.input.scrollTop),
       onfocus: () => this.updateContext(),
@@ -641,10 +642,15 @@ export class AiPanel {
 
   // ---- /commands ----------------------------------------------------------------------
 
-  /** Shows the matching skills while the input is a / followed by the start of a name. */
+  /**
+   * Shows the matching skills while the input is a / followed by part of a name: names that start
+   * with it first, then names with a word that does (/aud finds blind-audit), then any that contain it.
+   */
   private updateSlash(): void {
-    const m = /^\/([a-z0-9-]*)$/.exec(this.input.value)
-    const items = m ? (app.ai?.skills ?? []).filter((s) => s.name.startsWith(m[1])) : []
+    const m = /^\/([a-z0-9-]*)$/i.exec(this.input.value)
+    const q = m?.[1].toLowerCase() ?? ''
+    const rank = (name: string): number => name.startsWith(q) ? 0 : name.split('-').some((w) => w.startsWith(q)) ? 1 : name.includes(q) ? 2 : -1
+    const items = m ? (app.ai?.skills ?? []).map((s, i) => ({ s, i, r: rank(s.name) })).filter((x) => x.r >= 0).sort((a, b) => a.r - b.r || a.i - b.i).map((x) => x.s) : []
     if (!items.length) return this.closeSlash()
     if (items.length !== this.slashItems.length || items.some((s, i) => s !== this.slashItems[i])) this.slashIndex = 0
     this.slashItems = items
@@ -695,6 +701,16 @@ export class AiPanel {
    * exactly like it; otherwise the input draws its own text.
    */
   private paintCommand(): void {
+    try {
+      this.paintCommandUnsafe()
+    } catch (err) {
+      // Only looks: fall back to the input's own text.
+      this.input.parentElement?.classList.remove('has-command')
+      console.error('Could not colour the command:', err)
+    }
+  }
+
+  private paintCommandUnsafe(): void {
     const text = this.input.value
     const cmd = /^\/([a-z][a-z0-9-]*)(?=\s|$)/.exec(text)
     const valid = !!cmd && !!app.ai?.skills?.some((s) => s.name === cmd[1])
