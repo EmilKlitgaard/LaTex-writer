@@ -210,6 +210,10 @@ export class AiPanel {
       },
       onscroll: () => (this.inputMirror.scrollTop = this.input.scrollTop),
       onfocus: () => this.updateContext(),
+      onclick: () => this.updateSlash(),
+      onkeyup: (e: KeyboardEvent) => {
+        if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) this.updateSlash()
+      },
       onblur: () => this.closeSlash(),
       // A picture on the clipboard (a screenshot, an image copied from a page or a file copied in
       // Finder) goes with the message. Text wins when the clipboard has both, as it does when copying
@@ -643,12 +647,25 @@ export class AiPanel {
   // ---- /commands ----------------------------------------------------------------------
 
   /**
-   * Shows the matching skills while the input is a / followed by part of a name: names that start
-   * with it first, then names with a word that does (/aud finds blind-audit), then any that contain it.
+   * The /word the message starts with, while the cursor is in it, whatever follows. Only the start of
+   * the message counts: that is the only place a /command works.
+   */
+  private slashWord(): { query: string; word: string; caret: number; end: number } | null {
+    const m = /^\/([a-z0-9-]*)/i.exec(this.input.value)
+    const caret = this.input.selectionStart
+    if (!m || this.input.selectionEnd !== caret || caret < 1 || caret > m[0].length) return null
+    // What is typed up to the cursor is the search: typing /h in front of "the abstract" looks for "h".
+    return { query: m[0].slice(1, caret).toLowerCase(), word: m[1].toLowerCase(), caret, end: m[0].length }
+  }
+
+  /**
+   * Shows the matching skills while the cursor is in a /word at the start of the message: names that
+   * start with it first, then names with a word that does (/aud finds blind-audit), then any that
+   * contain it.
    */
   private updateSlash(): void {
-    const m = /^\/([a-z0-9-]*)$/i.exec(this.input.value)
-    const q = m?.[1].toLowerCase() ?? ''
+    const m = this.slashWord()
+    const q = m?.query ?? ''
     const rank = (name: string): number => name.startsWith(q) ? 0 : name.split('-').some((w) => w.startsWith(q)) ? 1 : name.includes(q) ? 2 : -1
     const items = m ? (app.ai?.skills ?? []).map((s, i) => ({ s, i, r: rank(s.name) })).filter((x) => x.r >= 0).sort((a, b) => a.r - b.r || a.i - b.i).map((x) => x.s) : []
     if (!items.length) return this.closeSlash()
@@ -682,9 +699,15 @@ export class AiPanel {
   /** Puts /name into the input, ready for what to apply it to; Enter on its own uses the selection. */
   private pickSkill(s: SkillInfo): void {
     this.closeSlash()
-    this.input.value = `/${s.name} `
+    // The /word is replaced, up to the cursor; the rest of the word too when it is part of this name
+    // (the cursor was inside /humanize-au|dit), so text typed after the /word always stays.
+    const w = this.slashWord()
+    const cut = !w ? 0 : s.name.includes(w.word) ? w.end : w.caret
+    const rest = this.input.value.slice(cut).replace(/^[ \t]+/, '')
+    const head = `/${s.name} `
+    this.input.value = head + rest
     this.input.focus()
-    this.input.setSelectionRange(this.input.value.length, this.input.value.length)
+    this.input.setSelectionRange(head.length, head.length)
     this.autosize()
   }
 
