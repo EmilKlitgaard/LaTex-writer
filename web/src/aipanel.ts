@@ -3,6 +3,7 @@ import {
 } from './api.ts'
 import { app } from './app.ts'
 import { clear, confirmDialog, h, icon, iconButton, toast } from './dom.ts'
+import { confirmAssistantStop } from './dialogs.ts'
 import { renderMarkdown } from './markdown.ts'
 import { OS } from './app.ts'
 
@@ -482,7 +483,10 @@ export class AiPanel {
     if (!this.messages.length) return
     this.closeHistory()
     try {
-      await api('POST', '/api/host/ai/reset', {})
+      await confirmAssistantStop((force) => api('POST', '/api/host/ai/reset', { force }), {
+        confirmLabel: 'Stop and start a new chat',
+        details: 'This chat stays in the chat history, and any changes so far stay in the list for your review.',
+      })
     } catch (err) {
       toast((err as Error).message, 'error')
     }

@@ -519,13 +519,13 @@ export function mountWorkbench(root: HTMLElement, hooks: WorkbenchHooks): () => 
   )
   // Desktop layout: only the editor, both side by side, or only the PDF. Remembered per browser.
   type Layout = 'editor' | 'split' | 'viewer'
-  const LAYOUTS: { id: Layout; label: string; title: string }[] = [
-    { id: 'editor', label: 'Editor', title: 'Only the editor' },
-    { id: 'split', label: 'Split', title: 'Editor and PDF side by side' },
-    { id: 'viewer', label: 'Viewer', title: 'Only the PDF' },
+  const LAYOUTS: { id: Layout; label: string; title: string; key: string }[] = [
+    { id: 'editor', label: 'Editor', title: 'Only the editor', key: '1' },
+    { id: 'split', label: 'Split', title: 'Editor and PDF side by side', key: '2' },
+    { id: 'viewer', label: 'Viewer', title: 'Only the PDF', key: '3' },
   ]
   const layoutSwitch = h('div', { class: 'layout-switch', role: 'group', 'aria-label': 'Layout' },
-    LAYOUTS.map((l) => h('button', { class: 'tab', type: 'button', title: l.title, dataset: { layout: l.id }, onclick: () => setLayout(l.id) }, l.label)))
+    LAYOUTS.map((l) => h('button', { class: 'tab', type: 'button', title: `${l.title} (⌘${l.key})`, 'aria-keyshortcuts': `Meta+${l.key}`, dataset: { layout: l.id }, onclick: () => setLayout(l.id) }, l.label)))
   let layout: Layout = 'split'
   function setLayout(next: Layout, remember = true): void {
     layout = next
@@ -855,8 +855,16 @@ export function mountWorkbench(root: HTMLElement, hooks: WorkbenchHooks): () => 
   banner.hidden = app.events.connected
 
   const onKey = (e: KeyboardEvent): void => {
-    // The editor handles these itself and marks the event as handled.
+    // The editor handles its own shortcuts first.
     if (e.defaultPrevented) return
+    if (e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !narrow.matches) {
+      const target = LAYOUTS.find((l) => l.key === e.key)
+      if (target && !document.querySelector('.modal-backdrop')) {
+        e.preventDefault()
+        setLayout(target.id)
+        return
+      }
+    }
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       e.preventDefault()
       void compile()

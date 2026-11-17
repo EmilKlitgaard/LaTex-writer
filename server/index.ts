@@ -404,7 +404,11 @@ export async function startServer(opts: { port?: number; strictPort?: boolean } 
 
   app.post('/api/host/ai/reset', async (req) => {
     requireAi(req)
-    requireProject().ai.reset()
+    const ai = requireProject().ai
+    if (ai.busy && body(req).force !== true) {
+      throw new HttpError(409, 'The assistant is still working in this chat. Starting a new chat stops it.', 'assistant-busy')
+    }
+    ai.reset()
     return { ok: true }
   })
 
