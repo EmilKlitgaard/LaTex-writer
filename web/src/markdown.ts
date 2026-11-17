@@ -16,8 +16,25 @@ function math(tex: string, display: boolean): HTMLElement {
   return el
 }
 
-/** A display formula that starts on line `i`: `$$ ... $$` or `\[ ... \]`, on one line or several. */
+// Display environments a model writes as bare LaTeX; KaTeX typesets them in display mode.
+const MATH_ENV = /^\s*\\begin\{((?:equation|align|alignat|gather|multline)\*?)\}/
+
+/**
+ * A display formula that starts on line `i`: `$$ ... $$`, `\[ ... \]` or a bare `\begin{equation}`-style
+ * environment, on one line or several.
+ */
 function blockMath(lines: string[], i: number): { tex: string; end: number } | null {
+  const env = MATH_ENV.exec(lines[i])
+  if (env) {
+    const close = `\\end{${env[1]}}`
+    for (let j = i; j < lines.length; j++) {
+      const at = lines[j].indexOf(close)
+      if (at < 0) continue
+      if (lines[j].slice(at + close.length).trim()) return null
+      return { tex: lines.slice(i, j + 1).join('\n').trim(), end: j }
+    }
+    return null
+  }
   const open = /^\s*(\$\$|\\\[)/.exec(lines[i])
   if (!open) return null
   const close = open[1] === '$$' ? '$$' : '\\]'
@@ -104,7 +121,30 @@ export type DocumentOptions = {
   imageUrl: (file: string) => string
 }
 
-type Ctx = { links?: FileLinks; doc?: DocumentOptions; slugs: Map<string, number> }
+/** What a chat reply can do that a document cannot. */
+export type ChatOptions = {
+  /** Sends an answer from a `choices` block as the user's message; without it the buttons are inert. */
+  choose?: (answer: string) => void
+}
+
+type Ctx = { links?: FileLinks; doc?: DocumentOptions; chat?: ChatOptions; slugs: Map<string, number> }
+
+const CALLOUTS: Record<string, string> = { note: 'Note', tip: 'Tip', important: 'Important', warning: 'Warning', caution: 'Caution' }
+
+/** A ```choices block: one button per line, each sending its text as the user's reply. */
+function choices(lines: string[], ctx: Ctx): HTMLElement {
+  const box = h('div', { class: 'md-choices', role: 'group', 'aria-label': 'Answers' })
+  const options = lines.map((l) => l.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, '').trim()).filter(Boolean)
+  for (const option of options) {
+    const label = h('span')
+    inline(option, label, { ...ctx, links: undefined })
+    box.append(h('button', {
+      class: 'md-choice', type: 'button', disabled: !ctx.chat?.choose, title: ctx.chat?.choose ? `Answer: ${option}` : null,
+      onclick: () => ctx.chat?.choose?.(option),
+    }, ...label.childNodes))
+  }
+  return box
+}
 
 /** `target` (a link or image address in the file at `from`) as a project path, or null if it leaves the project. */
 function resolveRelative(from: string, target: string): string | null {
@@ -184,6 +224,7 @@ function inline(text: string, parent: HTMLElement, ctx: Ctx): void {
     /(\*\*[^*\n]+?\*\*|(?<![\w])__[^_\n]+?__(?![\w]))/, // 11 strong
     /(\*[^*\s][^*\n]*?\*|(?<![\w])_[^_\s][^_\n]*?_(?![\w]))/, // 12 emphasis
     /(~~[^~\n]+~~)/, // 13 strikethrough
+    /(<u>[^\n]+?<\/u>)/, // 14 underline: only this exact tag, matched as text (no HTML is ever parsed)
   ].map((r) => r.source).join('|'), 'g')
   let last = 0
   let m: RegExpExecArray | null
@@ -211,10 +252,10 @@ function inline(text: string, parent: HTMLElement, ctx: Ctx): void {
       const url = token.replace(/^<|>$/g, '')
       parent.append(h('a', { href: url, target: '_blank', rel: 'noopener noreferrer' }, url))
     }
-    else if (m[11] || m[12] || m[13]) {
-      const strip = m[12] ? 1 : 2
-      const el = h(m[11] ? 'strong' : m[12] ? 'em' : 'del')
-      inline(token.slice(strip, -strip), el, ctx)
+    else if (m[11] || m[12] || m[13] || m[14]) {
+      const inner = m[14] ? token.slice(3, -4) : m[12] ? token.slice(1, -1) : token.slice(2, -2)
+      const el = h(m[11] ? 'strong' : m[12] ? 'em' : m[13] ? 'del' : 'u')
+      inline(inner, el, ctx)
       parent.append(el)
     }
     last = m.index + token.length
@@ -235,7 +276,7 @@ function tableCells(line: string): string[] {
 /** Is line `i` the start of something other than paragraph text? Such lines end a paragraph. */
 function startsBlock(lines: string[], i: number): boolean {
   const line = lines[i]
-  return FENCE.test(line) || RULE.test(line) || /^\s{0,3}#{1,6}\s/.test(line) || /^\s{0,3}>/.test(line) || LIST_ITEM.test(line)
+  return FENCE.test(line) || MATH_ENV.test(line) || RULE.test(line) || /^\s{0,3}#{1,6}\s/.test(line) || /^\s{0,3}>/.test(line) || LIST_ITEM.test(line)
     || (line.includes('|') && i + 1 < lines.length && TABLE_DIVIDER.test(lines[i + 1]) && lines[i + 1].includes('-'))
 }
 
@@ -280,6 +321,15 @@ function renderBlocks(lines: string[], offset: number, out: HTMLElement | Docume
       i++
       while (i < lines.length && !lines[i].trim().startsWith(fence[1])) code.push(lines[i++])
       const source = code.join('\n')
+      const lang = line.trim().slice(fence[1].length).trim().toLowerCase()
+      if (!ctx.doc && lang === 'choices') {
+        out.append(at(choices(code, ctx), start))
+        continue
+      }
+      if (lang === 'math' || lang === 'katex') {
+        out.append(at(math(source, true), start))
+        continue
+      }
       // The copy button sits in the block's top-right corner, as an icon: the chat is narrow.
       out.append(at(h('div', { class: 'copy-box block md-code-box' }, h('pre', { class: 'md-code' }, h('code', null, source)), copyButton(() => source, { label: '', what: 'the code' })), start))
       continue
@@ -341,9 +391,11 @@ function renderBlocks(lines: string[], offset: number, out: HTMLElement | Docume
         inline(heading[2], el, ctx)
         out.append(el)
       } else {
-        const p = at(h('p', { class: 'md-heading' }), i)
-        inline(heading[2], p, ctx)
-        out.append(p)
+        // In the chat a heading is real but small (see .md-h1 ... in style.css): the sidebar is narrow.
+        const level = Math.min(heading[1].length, 4)
+        const el = at(h(`h${level}` as 'h1', { class: `md-heading md-h${level}` }), i)
+        inline(heading[2], el, ctx)
+        out.append(el)
       }
       continue
     }
@@ -354,6 +406,13 @@ function renderBlocks(lines: string[], offset: number, out: HTMLElement | Docume
       const inner: string[] = []
       while (i < lines.length && /^\s{0,3}>/.test(lines[i])) inner.push(lines[i++].replace(/^\s{0,3}> ?/, ''))
       i--
+      const kind = /^\s*\[!(\w+)\]\s*$/.exec(inner[0] ?? '')?.[1].toLowerCase()
+      if (kind && CALLOUTS[kind]) {
+        const box = at(h('div', { class: `md-callout md-callout-${kind}`, role: 'note' }, h('p', { class: 'md-callout-title' }, CALLOUTS[kind])), start)
+        renderBlocks(inner.slice(1), offset + start + 1, box, ctx)
+        out.append(box)
+        continue
+      }
       const quote = at(h('blockquote'), start)
       renderBlocks(inner, offset + start, quote, ctx)
       out.append(quote)
@@ -408,13 +467,13 @@ function renderBlocks(lines: string[], offset: number, out: HTMLElement | Docume
 
 /**
  * Markdown as DOM nodes. Without `doc` it renders a chat reply: every line break kept, headings as bold
- * lines. With `doc` it renders a Markdown file of the project, with real headings and project images.
+ * lines, and the chat's own blocks (```choices, see server/chat-rules.md) as controls. With `doc` it renders a Markdown file of the project, with real headings and project images.
  * Every top-level block carries `data-line`, the source line it starts on.
  */
-export function renderMarkdown(source: string, links?: FileLinks, doc?: DocumentOptions): DocumentFragment {
+export function renderMarkdown(source: string, links?: FileLinks, doc?: DocumentOptions, chat?: ChatOptions): DocumentFragment {
   const out = document.createDocumentFragment()
   const lines = source.replace(/\r\n?/g, '\n').split('\n')
-  const ctx: Ctx = { links, doc, slugs: new Map() }
+  const ctx: Ctx = { links, doc, chat, slugs: new Map() }
   let offset = 0
   // Front matter (`---` ... `---` at the very top) is metadata, not text: show it as a quiet block.
   if (doc && lines[0]?.trim() === '---') {

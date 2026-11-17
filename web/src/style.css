@@ -13,6 +13,9 @@
   --accent: #1f7a5a;
   --accent-hover: #186349;
   --accent-soft: #e3f1eb;
+  /* A /command the app knows, in the message box and in sent messages. */
+  --command: #1f5fd1;
+  --command-soft: #e6eefc;
   --on-accent: #ffffff;
   --danger: #c92a2a;
   --danger-soft: #fdecec;
@@ -56,6 +59,8 @@
     --accent: #3aa380;
     --accent-hover: #4bb892;
     --accent-soft: #1d3a30;
+    --command: #7aa8ff;
+    --command-soft: #1c2a44;
     --on-accent: #07130f;
     --danger: #ff7b7b;
     --danger-soft: #3a1f1f;
@@ -94,6 +99,8 @@
   --accent: #3aa380;
   --accent-hover: #4bb892;
   --accent-soft: #1d3a30;
+  --command: #7aa8ff;
+  --command-soft: #1c2a44;
   --on-accent: #07130f;
   --danger: #ff7b7b;
   --danger-soft: #3a1f1f;
@@ -399,6 +406,14 @@ kbd { font-size: 11.5px; padding: 1px 5px; border: 1px solid var(--border-strong
 .md-code { margin: 0 0 7px; padding: 8px 10px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: auto; font-size: 12px; line-height: 1.45; }
 .md-code code { border: 0; padding: 0; background: none; }
 .md-heading { font-weight: 650; }
+/* Chat headings stay close to the text size: the sidebar is narrow. (The Markdown preview uses .md-doc h1...) */
+.md .md-heading { margin: 10px 0 4px; line-height: 1.3; color: var(--fg); text-transform: none; letter-spacing: normal; }
+.md > .md-heading:first-child { margin-top: 0; }
+.md .md-h1 { font-size: 1.15em; }
+.md .md-h2 { font-size: 1.07em; }
+.md .md-h3 { font-size: 1em; }
+.md .md-h4 { font-size: 0.92em; color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.03em; }
+.md u { text-underline-offset: 2px; }
 .md .katex { font-size: 1.05em; }
 .md-math-block { margin: 2px 0 8px; padding: 2px 0; overflow-x: auto; overflow-y: hidden; text-align: center; }
 .md-math-block .katex-display { margin: 0; }
@@ -420,6 +435,16 @@ kbd { font-size: 11.5px; padding: 1px 5px; border: 1px solid var(--border-strong
 .md .md-image { max-width: 100%; height: auto; border-radius: 4px; }
 .md .md-broken-link { text-decoration: underline wavy var(--fg-faint); text-underline-offset: 3px; }
 .md del { color: var(--fg-muted); }
+.md .md-callout { margin: 0 0 8px; padding: 6px 10px; border-left: 3px solid var(--callout); border-radius: 0 var(--radius) var(--radius) 0; background: var(--callout-soft); --callout: var(--command); --callout-soft: var(--command-soft); }
+.md .md-callout > :last-child { margin-bottom: 0; }
+.md .md-callout-title { margin: 0 0 3px; font-size: 0.85em; font-weight: 650; color: var(--callout); text-transform: uppercase; letter-spacing: 0.03em; }
+.md .md-callout-tip { --callout: var(--accent); --callout-soft: var(--accent-soft); }
+.md .md-callout-warning, .md .md-callout-caution { --callout: var(--warn); --callout-soft: var(--warn-soft); }
+.md .md-callout-important { --callout: var(--danger); --callout-soft: var(--danger-soft); }
+.md .md-choices { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 8px; }
+.md .md-choice { text-align: left; border: 1px solid var(--accent); background: var(--bg); color: var(--fg); border-radius: 999px; padding: 4px 11px; font-size: 12.5px; line-height: 1.35; }
+.md .md-choice:hover:not(:disabled) { background: var(--accent-soft); }
+.md .md-choice:disabled { border-color: var(--border-strong); color: var(--fg-muted); cursor: default; }
 
 /* The editor's Markdown preview: the open .md file, rendered for reading. */
 .md-switch { margin: 0 4px 0 0; }
@@ -494,7 +519,7 @@ kbd { font-size: 11.5px; padding: 1px 5px; border: 1px solid var(--border-strong
 .ai-skill-hint { font-size: 12px; line-height: 1.4; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .ai-skill-chip { font-family: var(--mono); font-size: 11.5px; padding: 1px 6px; border-radius: 6px; border: 1px solid var(--border-strong); background: var(--surface); color: var(--fg); }
 button.ai-skill-chip:hover { border-color: var(--accent); background: var(--accent-soft); }
-.ai-skill-chip.static { border-color: transparent; background: var(--bg); margin-right: 2px; }
+.ai-skill-chip.static { border-color: transparent; background: var(--command-soft); color: var(--command); font-weight: 600; margin-right: 2px; }
 .ai-box { display: flex; flex-direction: column; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--bg); overflow: hidden; }
 .ai-box:focus-within { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .ai-box-top { display: flex; flex-wrap: wrap; gap: 4px; margin: 7px 9px 0; min-width: 0; }
@@ -506,6 +531,13 @@ button.ai-skill-chip:hover { border-color: var(--accent); background: var(--acce
 .ai-context-where { flex: none; }
 .ai-context-where:not(:empty)::before { content: '·'; margin-right: 5px; }
 .ai-input { resize: none; border: 0; border-radius: 0; background: none; padding: 8px 10px 4px; line-height: 1.4; max-height: 160px; font-family: var(--sans); }
+/* The mirror lays the text out exactly like the input above it, and draws it only while a /command is shown. */
+.ai-input-wrap { position: relative; display: flex; flex-direction: column; }
+.ai-input-wrap > .ai-input { position: relative; z-index: 1; }
+.ai-input-mirror { position: absolute; inset: 0; padding: 8px 10px 4px; line-height: 1.4; font-family: var(--sans); white-space: pre-wrap; overflow-wrap: break-word; overflow: hidden; pointer-events: none; color: var(--fg); visibility: hidden; }
+.ai-input-wrap.has-command > .ai-input-mirror { visibility: visible; }
+.ai-input-wrap.has-command > .ai-input { color: transparent; caret-color: var(--fg); }
+.ai-input-command { color: var(--command); background: var(--command-soft); border-radius: 3px; }
 .ai-input:focus { outline: none; }
 .ai-box-bar { display: flex; align-items: center; gap: 4px; padding: 3px 5px 5px 6px; }
 .ai-box-bar .ai-model { height: 24px; border-color: transparent; background: none; color: var(--fg-muted); max-width: 110px; padding: 0 2px; border-radius: 6px; }

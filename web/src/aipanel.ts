@@ -122,6 +122,8 @@ export class AiPanel {
   /** Chats of this project, as last reported by the server. */
   private chats: ChatSummary[] = []
   private input: HTMLTextAreaElement
+  /** Drawn behind the input to show a valid /command in colour, which a textarea cannot do itself. */
+  private inputMirror: HTMLElement
   /** The list of /commands shown while the user types one. */
   private slashEl: HTMLElement
   private slashItems: SkillInfo[] = []
@@ -176,6 +178,7 @@ export class AiPanel {
       h('button', { type: 'button', role: 'menuitem', onclick: () => void this.attach('folder') }, icon('folder', 14), 'Add a folder…'),
       h('div', { class: 'ai-attach-note' }, 'The assistant can read them in this chat only, and never changes them.'))
     this.slashEl = h('div', { class: 'ai-slash', hidden: true, role: 'listbox', 'aria-label': 'Writing skills' })
+    this.inputMirror = h('div', { class: 'ai-input-mirror', 'aria-hidden': 'true' })
     this.input = h('textarea', {
       class: 'ai-input', rows: 2, placeholder: 'Ask for a change, or type / for writing skills', 'aria-label': 'Message to the assistant',
       onkeydown: (e: KeyboardEvent) => {
@@ -204,6 +207,7 @@ export class AiPanel {
         this.autosize()
         this.updateSlash()
       },
+      onscroll: () => (this.inputMirror.scrollTop = this.input.scrollTop),
       onfocus: () => this.updateContext(),
       onblur: () => this.closeSlash(),
       // A picture on the clipboard (a screenshot, an image copied from a page or a file copied in
@@ -241,7 +245,7 @@ export class AiPanel {
         this.attachMenu,
         h('div', { class: 'ai-box' },
           h('div', { class: 'ai-box-top' }, this.contextEl, this.sourcesEl, this.imagesEl),
-          this.input,
+          h('div', { class: 'ai-input-wrap' }, this.inputMirror, this.input),
           h('div', { class: 'ai-box-bar' },
             h('button', { class: 'icon-btn ai-attach', type: 'button', title: `Let the assistant read files or folders from ${OS.computer} in this chat`, 'aria-label': 'Add files or folders', 'aria-haspopup': 'menu', onclick: () => this.toggleAttachMenu() }, icon('plus', 15)),
             this.modelSelect, this.effortSelect, h('span', { class: 'grow' }), this.sendBtn)),
@@ -430,27 +434,33 @@ export class AiPanel {
 
   // ---- chat -------------------------------------------------------------------------
 
-  private async send(text = this.input.value): Promise<void> {
-    const message = text.trim()
-    const images = this.images
+  /** Sends the message box, or `given` (a suggestion or a clicked answer), which leaves the box and its pictures as they are. */
+  private async send(given?: string): Promise<void> {
+    const fromBox = given === undefined
+    const message = (given ?? this.input.value).trim()
+    const images = fromBox ? this.images : []
     if (!message && !images.length) return
     if (this.busy) {
       toast('The assistant is still working on your last message. Wait for it, or press Stop.', 'info')
       return
     }
-    this.input.value = ''
-    this.images = []
-    this.renderImages()
-    this.autosize()
+    if (fromBox) {
+      this.input.value = ''
+      this.images = []
+      this.renderImages()
+      this.autosize()
+    }
     this.stickToBottom = true
     try {
       await api('POST', '/api/host/ai/send', { text: message, context: this.hooks.context(), images: images.map(({ type, data }) => ({ type, data })) })
       for (const img of images) URL.revokeObjectURL(img.url)
     } catch (err) {
-      this.input.value = message
-      this.images = [...images, ...this.images]
-      this.renderImages()
-      this.autosize()
+      if (fromBox) {
+        this.input.value = message
+        this.images = [...images, ...this.images]
+        this.renderImages()
+        this.autosize()
+      }
       toast((err as Error).message, 'error', 7000)
     }
   }
@@ -675,7 +685,27 @@ export class AiPanel {
   private autosize(): void {
     this.input.style.height = 'auto'
     this.input.style.height = `${Math.min(160, this.input.scrollHeight + 2)}px`
+    this.paintCommand()
     this.keepBottom()
+  }
+
+  /**
+   * A message that starts with a skill or command the app knows shows that /name in colour, the way
+   * it will be read. The text is then drawn by the mirror behind the (see-through) input, laid out
+   * exactly like it; otherwise the input draws its own text.
+   */
+  private paintCommand(): void {
+    const text = this.input.value
+    const cmd = /^\/([a-z][a-z0-9-]*)(?=\s|$)/.exec(text)
+    const valid = !!cmd && !!app.ai?.skills?.some((s) => s.name === cmd[1])
+    this.input.parentElement?.classList.toggle('has-command', valid)
+    clear(this.inputMirror)
+    if (!valid) return
+    // The input's scroll bar, if any, narrows its text: the mirror matches its inner size.
+    this.inputMirror.style.right = `${this.input.offsetWidth - this.input.clientWidth}px`
+    // A trailing new line takes no room in a div, as it does in a textarea, without something after it.
+    this.inputMirror.append(h('span', { class: 'ai-input-command' }, cmd[0]), `${text.slice(cmd[0].length)}\u200b`)
+    this.inputMirror.scrollTop = this.input.scrollTop
   }
 
   /**
@@ -828,8 +858,11 @@ export class AiPanel {
     } else {
       const toolRow = (p: Extract<ChatPart, { kind: 'tool' }>): HTMLElement =>
         h('div', { class: `ai-tool ai-tool-${p.status} ${p.parent ? 'ai-tool-nested' : ''}` }, icon(p.status === 'error' ? 'error' : p.status === 'done' ? 'check' : 'refresh', 13), p.label)
+      // Answers in a ```choices block can be clicked only in the newest reply, once it is finished.
+      const isLatest = (): boolean => this.messages[this.messages.length - 1]?.id === m.id
+      const chat = isLatest() && !this.busy ? { choose: (answer: string) => void (isLatest() && !this.busy && this.send(answer)) } : {}
       for (const p of m.parts) {
-        if (p.kind === 'text') node.append(h('div', { class: 'md' }, renderMarkdown(p.text, { files: this.hooks.files, symbol: this.hooks.symbol, open: (file, line) => this.hooks.onJump(file, line ?? 1) })))
+        if (p.kind === 'text') node.append(h('div', { class: 'md' }, renderMarkdown(p.text, { files: this.hooks.files, symbol: this.hooks.symbol, open: (file, line) => this.hooks.onJump(file, line ?? 1) }, undefined, chat)))
         else if (p.kind === 'tool' && !p.parent) {
           node.append(toolRow(p))
           // Steps a helper agent took, tucked under the helper's own line.

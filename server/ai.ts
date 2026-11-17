@@ -9,7 +9,7 @@ import { broadcast } from './hub.ts'
 import { INSTRUCTIONS, MCP_SERVER_NAME } from './mcp.ts'
 import { HttpError, INTERNAL_DIR } from './paths.ts'
 import { BIN_DIRS, findClaudeCli, provider, type ProviderId } from './providers.ts'
-import { expandCommand, skillCatalog } from './skills.ts'
+import { CHAT_RULES, expandCommand, skillCatalog } from './skills.ts'
 import { withPath } from './platform.ts'
 
 export { findClaudeCli }
@@ -152,16 +152,9 @@ ${skillCatalog()}
   "does this read as machine-written?"), load the matching skill with use_skill first, once per
   conversation, and follow it.
 
-Answering:
-- Be brief. The sidebar is narrow: short paragraphs, no tables, no headings.
-- The sidebar typesets math. Write formulas as inline $...$ and display math as $$...$$ on its own lines (no \\( \\) or \\[ \\]). Write prices without a dollar sign or as \\$5. Put LaTeX source that is meant to be copied into the document, such as \\textbf{x} or an environment, in backticks or a code block, so it shows as text and is not typeset.
-- Refer to files by their project path, optionally with a line, like sections/method.tex:42. The sidebar turns these into links that open the file.
-- Mention a label or citation key on its own in backticks, like \`eq:E\` or \`knuth1984\` (or \\ref{eq:E}, \\cite{knuth1984}). The sidebar links it to where it is defined. Do not use backticks around ordinary words.
-- Do not paste back whole files or long passages the user can already see in the editor.
-- Notes you add to the project notes need no comment. If you changed the author's writing preferences, say so in one sentence.
-- When you changed something, say in one or two sentences what changed and where. The user sees the exact changes in the review list.
-- If a request is ambiguous, ask one short question instead of guessing.
-- Answer in the language the user writes in.`
+<chat-rules>
+${CHAT_RULES}
+</chat-rules>`
 }
 
 /** A source as the chat shows it: the folder or file name rather than a long path. */

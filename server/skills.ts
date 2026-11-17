@@ -36,6 +36,13 @@ function parse(file: string): Skill {
 const all = fs.readdirSync(DIR).filter((f) => f.endsWith('.md')).map((f) => parse(path.join(DIR, f))).sort((a, b) => a.name.localeCompare(b.name))
 const guides = new Map(all.filter((s) => !s.hint).map((s) => [s.name, s.body]))
 
+/**
+ * The app's global rules for writing in the chat (server/chat-rules.md): tone, and the formatting the
+ * sidebar renders (math, references, callouts, choices). Shipped with the app and read-only: no tool
+ * changes it. It goes into the system prompt of every agent the chat runs.
+ */
+export const CHAT_RULES = fs.readFileSync(path.join(import.meta.dirname, 'chat-rules.md'), 'utf8').trim()
+
 /** The skills the user and the assistant can use, in a stable order. */
 export const SKILLS: Skill[] = all.filter((s) => s.hint)
 
