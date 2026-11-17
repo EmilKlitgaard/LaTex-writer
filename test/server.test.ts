@@ -663,6 +663,17 @@ test('the assistant can compile and read the result as text or as a page image',
   assert.match((await tool('read_pdf_text', { query: 'no such words' })).content[0].text, /does not occur/)
   assert.match((await tool('check_layout')).content[0].text, /^1 page\./)
 
+  const reference = path.join(projectDir, 'Reference.PDF')
+  fs.copyFileSync(path.join(projectDir, 'main.pdf'), reference)
+  try {
+    assert.match((await tool('read_file', { path: 'Reference.PDF' })).content[0].text, /Introduction/)
+    assert.match((await tool('read_pdf_text', { path: 'Reference.PDF', query: 'introduction' })).content[0].text, /^p\.1: 1 Introduction/m)
+    assert.equal((await tool('view_page', { path: 'Reference.PDF', page: 1 })).content[1].mimeType, 'image/png')
+    assert.equal((await tool('read_pdf_text', { path: '../Reference.PDF' })).isError, true)
+  } finally {
+    fs.unlinkSync(reference)
+  }
+
   const size = (r: any): number[] => (/(\d+)x(\d+) px/.exec(r.content[0].text) ?? []).slice(1).map(Number)
   const page = await tool('view_page', { page: 1 })
   assert.equal(page.content[1].type, 'image')
@@ -942,8 +953,10 @@ test('other projects are readable only after the user allows it, and attachments
   // Attachments belong to one chat: tools called for another chat (or from outside the app) cannot see them.
   const outside = fs.mkdtempSync(path.join(HOME, 'notes-'))
   fs.writeFileSync(path.join(outside, 'rules.md'), '# Rules\nUse \\section* for exercises.\n')
-  const attached = (await host('POST', '/api/host/ai/attach', { paths: [outside, '/definitely/missing', 'relative/path'] })).json.attachments
-  assert.deepEqual(attached, [outside])
+  const attachment = path.join(HOME, 'Assignment_read.pdf')
+  fs.copyFileSync(path.join(projectDir, 'main.pdf'), attachment)
+  const attached = (await host('POST', '/api/host/ai/attach', { paths: [outside, attachment, '/definitely/missing', 'relative/path'] })).json.attachments
+  assert.deepEqual(attached, [outside, attachment])
   const chatId = (await state()).activeId
   const tool4chat = async (id: string, name: string, args: Record<string, unknown>): Promise<any> => {
     const res = await fetch(`${HOST}/mcp?chat=${id}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }) })
@@ -953,11 +966,17 @@ test('other projects are readable only after the user allows it, and attachments
   assert.match((await tool4chat(chatId, 'read_file', { source: path.join(outside, 'rules.md') })).content[0].text, /# Rules/, 'a path inside an attached folder works as a source')
   assert.equal((await tool4chat('another-chat', 'read_file', { source: outside, path: 'rules.md' })).isError, true)
   assert.equal((await tool('read_file', { source: outside, path: 'rules.md' })).isError, true)
+  assert.match((await tool4chat(chatId, 'read_file', { source: attachment })).content[0].text, /Introduction/)
+  assert.match((await tool4chat(chatId, 'read_pdf_text', { source: attachment })).content[0].text, /Introduction/)
+  assert.equal((await tool4chat(chatId, 'view_page', { source: attachment, page: 1 })).content[1].mimeType, 'image/png')
+  assert.equal((await tool4chat('another-chat', 'read_pdf_text', { source: attachment })).isError, true)
+  assert.equal((await tool4chat(chatId, 'read_pdf_text', { source: attachment, path: 'other.pdf' })).isError, true)
   // The assistant is told about the attachment with the next message, once.
   await host('POST', '/api/host/ai/send', { text: 'Structure this like my rules' })
   await until(async () => !(await state()).busy && (await state()).messages.length >= 2, 'the turn with an attachment')
   assert.match(fs.readFileSync(path.join(HOME, 'cli-stdin.txt'), 'utf8'), new RegExp(`attached these for this conversation[^\\n]*${outside.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
   await host('POST', '/api/host/ai/detach', { path: outside })
+  await host('POST', '/api/host/ai/detach', { path: attachment })
   assert.deepEqual((await state()).attachments, [])
   await host('POST', '/api/host/ai/reset', {})
 
