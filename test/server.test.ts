@@ -358,6 +358,30 @@ test('export copies the PDF to Downloads without overwriting', async () => {
   assert.ok(fs.statSync(path.join(HOME, 'Downloads', 'Test Project (2).pdf')).size > 1000)
 })
 
+test('the advanced exporter saves the PDF in parts, to Downloads or as a zip', async () => {
+  const pages = (await host('GET', '/api/project/build')).json
+  const version = pages.pdfVersion
+  const parts = [[{ page: 1, bands: [{ from: 0, to: 300, dy: 0 }] }], [{ page: 1, bands: [{ from: 300, to: 842, dy: -200 }] }]]
+  const saved = await host('POST', '/api/project/pdf/parts', { version, parts, names: ['Front', ''], target: 'downloads' })
+  assert.equal(saved.status, 200, saved.text)
+  assert.deepEqual(saved.json.files.map((f: { name: string }) => f.name), ['Front.pdf', 'Test Project - Part 2.pdf'])
+  for (const f of saved.json.files) assert.equal(fs.readFileSync(f.file).subarray(0, 5).toString(), '%PDF-')
+  // A second save never overwrites: the whole set gets the same number.
+  const again = await host('POST', '/api/project/pdf/parts', { version, parts, names: ['Front', ''], target: 'downloads' })
+  assert.deepEqual(again.json.files.map((f: { name: string }) => f.name), ['Front (2).pdf', 'Test Project - Part 2 (2).pdf'])
+
+  const zip = await fetch(`${HOST}/api/project/pdf/parts`, { method: 'POST', headers: { Origin: HOST, 'X-LW': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ version, parts, target: 'zip' }) })
+  assert.equal(zip.status, 200)
+  assert.match(zip.headers.get('content-disposition') ?? '', /Test%20Project%20-%202%20parts\.zip/)
+  const bytes = Buffer.from(await zip.arrayBuffer())
+  assert.equal(bytes.subarray(0, 2).toString(), 'PK')
+  assert.ok(bytes.includes(Buffer.from('Test Project - Part 1.pdf')))
+
+  // A plan made for an older build is refused rather than applied to the new one.
+  assert.equal((await host('POST', '/api/project/pdf/parts', { version: version - 1, parts, target: 'zip' })).status, 409)
+  assert.equal((await host('POST', '/api/project/pdf/parts', { version, parts: [[{ page: 99 }]], target: 'zip' })).status, 400)
+})
+
 test('the project downloads as a zip without internal files', async () => {
   const res = await fetch(`${HOST}/api/project/zip`)
   const bytes = Buffer.from(await res.arrayBuffer())

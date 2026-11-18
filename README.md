@@ -64,7 +64,11 @@ Markdown files (`.md`) in a project, such as notes and instructions, have a **So
 
 The compile status in the top bar (the error count, or the time of a clean compile) shows and hides the Problems list under the PDF. In the Editor layout it switches to Split first and opens the list, since the list lives in the PDF pane.
 
-**Share** in the top bar (inside a project) saves the PDF to Downloads (on a guest's device: downloads it), downloads the project as a .zip, opens **Share on your network…**, and **Connect an AI app…** (see the assistant below). The theme is a three-way switch in Settings: **Auto** follows the Mac's light or dark appearance, or choose **Light** or **Dark**.
+**Share** in the top bar (inside a project) saves the PDF to Downloads (on a guest's device: downloads it), downloads the project as a .zip, opens **Share on your network…**, and **Connect an AI app…** (see the assistant below).
+
+**Advanced exporter…** (also under Share, ⇧⌘E) saves the PDF as several PDFs. It opens with one split just before the abstract; the pop-up next to each split also offers every heading in the document's contents, and the split goes right above the one you pick. Click between two lines of a page in the preview to add a split there, drag a split to move it, and add as many as you like. Splits snap to the space between lines, so nothing is cut in half. A split in the middle of a page keeps the top of the page in the part before it; the rest of the page moves up to where the text normally starts, on the first page of the next part, with the running header and page number kept where they were. Only what shows on a page stays in its file: the text cut away from a page is removed, not just hidden. **Result** shows every file page by page before you save. The host saves the files to Downloads (or one .zip); a guest downloads a .zip.
+
+The theme is a three-way switch in Settings: **Auto** follows the Mac's light or dark appearance, or choose **Light** or **Dark**.
 
 ## Requirements
 

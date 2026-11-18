@@ -7,6 +7,7 @@ import { clear, closeOverlays, debounce, h, icon, iconButton, showMenu, store, t
 import { FileTree } from './filetree.ts'
 import { parseOutline, type OutlineItem } from './latex.ts'
 import { LogPanel } from './logpanel.ts'
+import { openSplitDialog } from './splitdialog.ts'
 import { markdownOutline, renderMarkdown, type FileLinks } from './markdown.ts'
 import { PdfView } from './pdfview.ts'
 import { OS } from './app.ts'
@@ -577,6 +578,7 @@ export function mountWorkbench(root: HTMLElement, hooks: WorkbenchHooks): () => 
       isHost
         ? { label: 'Save PDF to Downloads', icon: 'download', onclick: () => void exportPdf() }
         : { label: 'Download PDF', icon: 'download', onclick: downloadPdf },
+      { label: 'Advanced exporter…', icon: 'scissors', shortcut: '⇧⌘E', onclick: openExporter },
       { label: 'Download project as .zip', icon: 'download', onclick: () => downloadUrl('/api/project/zip') },
       ...(isHost ? [
         'separator' as const,
@@ -621,6 +623,12 @@ export function mountWorkbench(root: HTMLElement, hooks: WorkbenchHooks): () => 
     document.body.appendChild(a)
     a.click()
     a.remove()
+  }
+  function openExporter(): void {
+    if (document.querySelector('.modal-backdrop')) return
+    // The current build, even while the review shows the earlier PDF.
+    if (latestPdfVersion <= 0) return toast('There is no PDF yet. Compile first.', 'info')
+    void openSplitDialog({ version: latestPdfVersion, projectName: app.project?.name || 'Document', isHost })
   }
   function downloadPdf(): void {
     if (!shownPdfVersion) return toast('There is no PDF yet. Compile first.', 'info')
@@ -865,7 +873,10 @@ export function mountWorkbench(root: HTMLElement, hooks: WorkbenchHooks): () => 
         return
       }
     }
-    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+    if ((e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'e') {
+      e.preventDefault()
+      openExporter()
+    } else if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       e.preventDefault()
       void compile()
     } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {

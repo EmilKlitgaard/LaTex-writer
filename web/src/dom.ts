@@ -44,6 +44,9 @@ const ICONS: Record<string, string> = {
   image: '<rect x="2.5" y="3" width="11" height="10" rx="1.5"/><circle cx="6" cy="6.5" r="1"/><path d="m3 11.5 3-3 2.5 2.5 2-2 2.5 2.5"/>',
   chevron: '<path d="m6 4 4 4-4 4"/>',
   plus: '<path d="M8 3v10M3 8h10"/>',
+  minus: '<path d="M3.5 8h9"/>',
+  scissors: '<circle cx="4.5" cy="4.5" r="2"/><circle cx="4.5" cy="11.5" r="2"/><path d="M6.2 5.6 13.5 12M6.2 10.4 13.5 4"/>',
+  updown: '<path d="m5 6.5 3-3 3 3M5 9.5l3 3 3-3"/>',
   'folder-plus': '<path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h3l1.5 1.5h4.5A1.5 1.5 0 0 1 14 6v5.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5z"/><path d="M8 7v4M6 9h4"/>',
   upload: '<path d="M8 10.5V3m0 0L5 6m3-3 3 3M3 10.5v2h10v-2"/>',
   download: '<path d="M8 3v7.5m0 0-3-3m3 3 3-3M3 12.5h10"/>',
@@ -202,7 +205,7 @@ export function promptDialog(opts: { title: string; label: string; value?: strin
 
 // ---- context menu ------------------------------------------------------------------
 
-export type MenuItem = { label: string; icon?: string; danger?: boolean; onclick: () => void } | 'separator'
+export type MenuItem = { label: string; icon?: string; danger?: boolean; shortcut?: string; onclick: () => void } | 'separator'
 
 export function showMenu(x: number, y: number, items: MenuItem[]): void {
   document.querySelector('.menu')?.remove()
@@ -227,7 +230,8 @@ export function showMenu(x: number, y: number, items: MenuItem[]): void {
     menu.appendChild(h('button', {
       class: `menu-item ${item.danger ? 'danger' : ''}`, type: 'button', role: 'menuitem',
       onclick: () => { close(); item.onclick() },
-    }, item.icon ? icon(item.icon) : h('span', { class: 'menu-spacer' }), item.label))
+    }, item.icon ? icon(item.icon) : h('span', { class: 'menu-spacer' }), item.label,
+      item.shortcut ? h('span', { class: 'menu-shortcut' }, item.shortcut) : null))
   }
   document.body.appendChild(menu)
   const rect = menu.getBoundingClientRect()

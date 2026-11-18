@@ -377,7 +377,7 @@ export function openSettingsDialog(opts: { texFiles: string[]; onLeave: () => vo
   m.body.append(h('div', { class: 'section' },
     h('h3', null, 'Shortcuts'),
     h('dl', { class: 'shortcuts' },
-      ...[['⌘ S or ⌘ Enter', 'Recompile (files are saved as you type)'], ['⌘ J', 'Show the cursor position in the PDF'], ['Double-click in PDF', 'Jump to that place in the source'], ['⌘ F', 'Find and replace'], ['⌘ /', 'Comment or uncomment lines'], ['⌘ B / ⌘ I', 'Bold / emphasis'],
+      ...[['⌘ S or ⌘ Enter', 'Recompile (files are saved as you type)'], ['⌘ J', 'Show the cursor position in the PDF'], ['Double-click in PDF', 'Jump to that place in the source'], ['⌘ F', 'Find and replace'], ['⌘ /', 'Comment or uncomment lines'], ['⌘ B / ⌘ I', 'Bold / emphasis'], ['⇧ ⌘ E', 'Advanced exporter (save the PDF in parts)'],
         ['⌘ 1', 'Switch to Editor'], ['⌘ 2', 'Switch to Split'], ['⌘ 3', 'Switch to Viewer']]
         .flatMap(([k, v]) => [h('dt', null, h('kbd', null, k)), h('dd', null, v)])),
   ))

@@ -12,6 +12,14 @@ let sharedWorker: pdfjs.PDFWorker | null = null
 const worker = (): pdfjs.PDFWorker => (sharedWorker ??= new pdfjs.PDFWorker())
 
 const asset = (dir: string): string => new URL(`pdfjs/${dir}/`, document.baseURI).href
+
+/** Opens a PDF with the same worker and font data the viewer uses (for the advanced exporter). */
+export function openPdfDocument(data: ArrayBuffer): Promise<PDFDocumentProxy> {
+  return pdfjs.getDocument({
+    data, worker: worker(), cMapUrl: asset('cmaps'), cMapPacked: true,
+    standardFontDataUrl: asset('standard_fonts'), wasmUrl: asset('wasm'), iccUrl: asset('iccs'),
+  }).promise
+}
 const CSS_UNITS = 96 / 72
 const PAGE_GAP = 12
 const PADDING = 16
