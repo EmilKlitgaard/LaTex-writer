@@ -42,6 +42,17 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$DEST_DIR"
 
+# Output: a cyan "▶ 2/4  Step" line per step and a ✅ summary, coloured only in a terminal (the
+# release script reads this output through a pipe, and looks for "payload", "Created" and "Skipped").
+if [ -t 1 ]; then BOLD_CYAN=$'\033[1;36m'; RESET=$'\033[0m'; else BOLD_CYAN=""; RESET=""; fi
+STEPS=4
+if [ "${NO_NATIVE:-0}" = 1 ] || ! command -v swiftc >/dev/null 2>&1; then STEPS=2; fi
+STEP=0
+step() {
+  STEP=$((STEP + 1))
+  printf '\n%s▶ %s/%s  %s%s\n' "$BOLD_CYAN" "$STEP" "$STEPS" "$1" "$RESET"
+}
+
 # Quits a running copy of an app before it is replaced (its server saves open files as it stops).
 # Only when the bundle at that path has that id and runs from there, and never by launching it:
 # "tell application id" on its own would start an app that is not running.
@@ -50,7 +61,7 @@ quit_app() {
   [ -f "$bundle/Contents/Info.plist" ] || return 0
   [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$bundle/Contents/Info.plist" 2>/dev/null)" = "$id" ] || return 0
   pgrep -f "$bundle/Contents/MacOS/" >/dev/null 2>&1 || return 0
-  echo "Quitting the running $(basename "$bundle" .app)..."
+  echo "   Quitting the running $(basename "$bundle" .app)…"
   /usr/bin/osascript -e "if application id \"$id\" is running then tell application id \"$id\" to quit" >/dev/null 2>&1 || true
   for _ in $(seq 1 80); do pgrep -f "$bundle/Contents/MacOS/" >/dev/null 2>&1 || break; sleep 0.1; done
 }
@@ -65,10 +76,12 @@ if [ "$RELEASE" = 1 ]; then
   (cd "$SRC" && git ls-files -co --exclude-standard | grep -v -E '^(test/|scripts/app/|\.claude/|\.gitignore$)|\.command$' | tar -cf - -T -) | tar -C "$PAYLOAD" -xf -
   PAYLOAD_VERSION="${APP_VERSION:-dev}-$(git -C "$SRC" rev-parse --short HEAD 2>/dev/null || echo local)-$(date +%Y%m%d%H%M%S)"
   printf '%s\n' "$PAYLOAD_VERSION" > "$PAYLOAD/.version"
-  echo "Release payload $PAYLOAD_VERSION: $(find "$PAYLOAD" -type f | wc -l | tr -d ' ') files"
+  echo "   Release payload $PAYLOAD_VERSION: $(find "$PAYLOAD" -type f | wc -l | tr -d ' ') files"
 fi
 
 # ---- icon (shared): the favicon rendered at the sizes macOS wants ---------------------------------
+
+step "Icon (the favicon at every size macOS wants)"
 
 ICNS=""
 ICON_SRC="$SRC/web/public/favicon.svg"
@@ -84,6 +97,8 @@ if /usr/bin/qlmanage -t -s 1024 -o "$TMP" "$ICON_SRC" >/dev/null 2>&1 && [ -f "$
 fi
 
 # ---- LaTeX Writer Web.app: an AppleScript launcher that opens the browser --------------------------
+
+step "$WEB_NAME (opens the editor in your browser)"
 
 cat > "$TMP/app.applescript" <<'APPLESCRIPT'
 property sourceFolder : "__SOURCE_FOLDER__"
@@ -249,17 +264,34 @@ if [ -n "$PAYLOAD" ]; then cp -R "$PAYLOAD" "$APP/Contents/Resources/app"; fi
 # The bundle was edited after osacompile signed it; sign it again (ad hoc, for this Mac only).
 /usr/bin/codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
 touch "$APP"
-echo "Created: $APP"
+CREATED=("$APP")
+
+# The summary at the end: what was made, and how each app behaves.
+summary() {
+  printf '\n'
+  for app in "${CREATED[@]}"; do echo "✅ Created: $app"; done
+  if [ -n "$PAYLOAD" ]; then echo "   Source folder: a copy inside each app (release build)"; else echo "   Source folder: $SRC"; fi
+  if [ "${#CREATED[@]}" -gt 1 ]; then
+    echo "   $NATIVE_NAME       its own window; quitting it stops the server it started"
+  fi
+  echo "   $WEB_NAME   opens in your browser; quit it from the Dock to stop the server"
+  echo "   Open them from Finder or Spotlight, and drag them to the Dock if you like."
+}
 
 # ---- LaTeX Writer.app: the native window ----------------------------------------------------------
 
 if [ "${NO_NATIVE:-0}" = 1 ]; then
+  summary
   exit 0
 fi
 if ! command -v swiftc >/dev/null 2>&1; then
-  echo "Skipped $NATIVE_NAME.app: swiftc was not found. Install the Xcode Command Line Tools (xcode-select --install) and run this again."
+  summary
+  echo
+  echo "⚠️  Skipped $NATIVE_NAME.app: swiftc was not found. Install the Xcode Command Line Tools (xcode-select --install) and run this again."
   exit 0
 fi
+
+step "Compiling $NATIVE_NAME (its own window)"
 
 STAGE="$TMP/stage/$NATIVE_NAME.app"
 mkdir -p "$STAGE/Contents/MacOS" "$STAGE/Contents/Resources"
@@ -296,6 +328,8 @@ if [ -n "$PAYLOAD" ]; then
 else
   /usr/bin/plutil -replace LWSourceFolder -string "$SRC" "$STAGE/Contents/Info.plist"
 fi
+
+step "Signing and installing in $DEST_DIR"
 printf 'APPL????' > "$STAGE/Contents/PkgInfo"
 /usr/bin/codesign --force --sign - "$STAGE" >/dev/null 2>&1 || true
 
@@ -304,8 +338,5 @@ rm -rf "$NATIVE"
 /usr/bin/ditto "$STAGE" "$NATIVE"
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$NATIVE" >/dev/null 2>&1 || true
 touch "$NATIVE"
-echo "Created: $NATIVE"
-echo
-echo "Open either from Finder or Spotlight, and drag it to the Dock if you like."
-echo "  $NATIVE_NAME       its own window; quitting it stops the server it started."
-echo "  $WEB_NAME   opens in your browser; quit it from the Dock to stop the server."
+CREATED+=("$NATIVE")
+summary
