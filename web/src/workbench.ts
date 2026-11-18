@@ -578,8 +578,8 @@ export function mountWorkbench(root: HTMLElement, hooks: WorkbenchHooks): () => 
       isHost
         ? { label: 'Save PDF to Downloads', icon: 'download', onclick: () => void exportPdf() }
         : { label: 'Download PDF', icon: 'download', onclick: downloadPdf },
-      { label: 'Advanced exporter…', icon: 'scissors', shortcut: '⇧⌘E', onclick: openExporter },
       { label: 'Download project as .zip', icon: 'download', onclick: () => downloadUrl('/api/project/zip') },
+      { label: 'Advanced exporter…', icon: 'download', shortcut: '⇧⌘E', onclick: openExporter },
       ...(isHost ? [
         'separator' as const,
         { label: 'Share on your network…', icon: 'share', onclick: openShareDialog },

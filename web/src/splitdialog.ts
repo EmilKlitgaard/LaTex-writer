@@ -34,9 +34,16 @@ const plural = (n: number, one: string, many = `${one}s`): string => `${n} ${n =
 /** The text of a page as lines, top to bottom, with their height and size. */
 async function textLines(page: PDFPageProxy): Promise<TextLine[]> {
   const vp = page.getViewport({ scale: 1 })
-  const content = await page.getTextContent()
+  // Not page.getTextContent(): that reads the stream with for await, which Safari's streams do not support.
+  const reader = page.streamTextContent().getReader()
+  const items: unknown[] = []
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (done) break
+    items.push(...(value as { items: unknown[] }).items)
+  }
   const rows: { y: number; size: number; parts: { x: number; s: string }[] }[] = []
-  for (const item of content.items) {
+  for (const item of items as Awaited<ReturnType<PDFPageProxy['getTextContent']>>['items']) {
     if (!('str' in item) || !item.str.trim()) continue
     const [a, b, c, d, e, f] = item.transform as number[]
     if (Math.abs(b) > 0.01 || Math.abs(c) > 0.01 || a <= 0) continue // rotated text is no heading
