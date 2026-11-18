@@ -1,6 +1,6 @@
 import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist'
 import { api } from './api.ts'
-import { OS } from './app.ts'
+import { app, OS } from './app.ts'
 import { clear, h, icon, openModal, store, toast } from './dom.ts'
 import { openPdfDocument } from './pdfview.ts'
 import { cleanCuts, cutBefore, findFurniture, inkRuns, normalizeCut, pageRange, planParts, snapCut, type Cut, type Furniture, type PageInk, type Piece } from './splitplan.ts'
@@ -162,14 +162,26 @@ async function findTargets(pdf: PDFDocumentProxy, lines: TextLine[][]): Promise<
   return out.sort((a, b) => a.page - b.page || a.y - b.y)
 }
 
-export async function openSplitDialog(opts: { version: number; projectName: string; isHost: boolean }): Promise<void> {
+export async function openSplitDialog(opts: { projectName: string; isHost: boolean }): Promise<void> {
   let disposed = false
+  const offs: (() => void)[] = []
+  /** The build the dialog shows, from the server; a save names it, so a newer build is never cut by an older plan. */
+  let version = 0
+  // Builds that finish from the moment the dialog opens, even while it is still loading.
+  let newerBuild = 0
+  let showRebuilt = (): void => {}
+  offs.push(app.events.on((e) => {
+    if (e.type !== 'compile' || e.state === 'compiling' || !e.result?.pdfVersion) return
+    newerBuild = e.result.pdfVersion
+    showRebuilt()
+  }))
   let pdf: PDFDocumentProxy | null = null
   let dragTimer: ReturnType<typeof setInterval> | null = null
   const m = openModal({
     title: 'Advanced exporter',
     onClose: () => {
       disposed = true
+      offs.forEach((off) => off())
       observer.disconnect()
       if (dragTimer) clearInterval(dragTimer)
       const p = pdf
@@ -177,7 +189,8 @@ export async function openSplitDialog(opts: { version: number; projectName: stri
     },
   })
   m.root.querySelector('.modal')!.classList.add('split-modal')
-  const loading = h('div', { class: 'sp-loading' }, h('span', { class: 'ai-spinner' }), 'Reading the document…')
+  const loadingText = h('span', null, 'Reading the document…')
+  const loading = h('div', { class: 'sp-loading' }, h('span', { class: 'ai-spinner' }), loadingText)
   m.body.append(loading)
   m.footer.append(h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, 'Cancel'))
 
@@ -197,13 +210,53 @@ export async function openSplitDialog(opts: { version: number; projectName: stri
   // ---- the document --------------------------------------------------------------------------
   let lines: TextLine[][] = []
   let sizes: { width: number; height: number; rotated: boolean }[] = []
+  /** Resolves when the compile that is running now has finished (or the dialog closes). */
+  const buildDone = (): Promise<void> => new Promise((resolve) => {
+    const off = app.events.on((e) => {
+      if (e.type === 'compile' && e.state !== 'compiling') { off(); resolve() }
+    })
+    offs.push(() => { off(); resolve() })
+  })
+  const compiling = async (): Promise<boolean> => {
+    try {
+      return !!(await api<{ compiling: boolean }>('GET', '/api/project/build')).compiling
+    } catch {
+      return false
+    }
+  }
   try {
-    const res = await fetch(`/api/project/pdf?v=${opts.version}`, { credentials: 'same-origin', cache: 'no-store' })
-    if (!res.ok) throw new Error('There is no PDF yet. Compile first.')
-    pdf = await openPdfDocument(await res.arrayBuffer())
-    for (let n = 1; n <= pdf.numPages; n++) {
+    // The PDF already made is used straight away. Only when there is none yet, or what comes is not
+    // a whole PDF, does the dialog say it waits for the compile, and it loads the PDF when that ends.
+    for (let attempt = 0; !pdf; attempt++) {
+      let failure: Error | null = null
+      try {
+        const res = await fetch('/api/project/pdf', { credentials: 'same-origin', cache: 'no-store' })
+        if (!res.ok) throw new Error('There is no PDF yet. Compile first.')
+        const data = await res.arrayBuffer()
+        version = Number(res.headers.get('X-PDF-Version')) || 0
+        pdf = await openPdfDocument(data)
+      } catch (err) {
+        failure = err as Error
+      }
       if (disposed) return
-      const page = await pdf.getPage(n)
+      if (pdf) break
+      if (attempt >= 3) throw failure ?? new Error('The PDF could not be read.')
+      if (await compiling()) {
+        loadingText.textContent = 'Generating the PDF… It opens here when it is ready.'
+        await buildDone()
+        if (disposed) return
+        loadingText.textContent = 'Reading the document…'
+      } else if (attempt === 0 && failure?.name !== 'Error') {
+        // A build may just have finished writing it: one more try after a moment.
+        await new Promise((r) => setTimeout(r, 700))
+      } else {
+        throw failure?.message === 'There is no PDF yet. Compile first.' ? failure : new Error('The PDF could not be read. Recompile, then open the exporter again.')
+      }
+    }
+    const opened = pdf!
+    for (let n = 1; n <= opened.numPages; n++) {
+      if (disposed) return
+      const page = await opened.getPage(n)
       const vp = page.getViewport({ scale: 1 })
       sizes.push({ width: vp.width, height: vp.height, rotated: page.rotate % 360 !== 0 })
       lines.push(await textLines(page))
@@ -211,7 +264,10 @@ export async function openSplitDialog(opts: { version: number; projectName: stri
   } catch (err) {
     if (disposed) return
     clear(m.body)
-    m.body.append(h('p', { class: 'muted' }, (err as Error).message || 'Could not read the PDF.'))
+    m.body.append(h('div', { class: 'sp-loading sp-failed' },
+      icon('warning', 18),
+      h('span', null, (err as Error).message || 'Could not read the PDF.'),
+      h('button', { class: 'btn btn-small', type: 'button', onclick: () => { m.close(); void openSplitDialog(opts) } }, 'Try again')))
     return
   }
   const doc = pdf
@@ -348,9 +404,19 @@ export async function openSplitDialog(opts: { version: number; projectName: stri
   const docSeg = h('button', { class: 'segment', type: 'button', onclick: () => setView('document') }, 'Pages')
   const resSeg = h('button', { class: 'segment', type: 'button', onclick: () => setView('result') }, 'Result')
   const hint = h('span', { class: 'sp-hint' })
+  // A newer build while the dialog is open: the splits were made on the old one, so say so and
+  // offer to start again on the new PDF (saving the old plan would be refused anyway).
+  const rebuilt = h('div', { class: 'sp-rebuilt', hidden: true },
+    icon('refresh', 14), h('span', null, 'The PDF was rebuilt.'),
+    h('button', { class: 'btn btn-small', type: 'button', onclick: () => { m.close(); void openSplitDialog(opts) } }, 'Refresh'))
+  showRebuilt = () => {
+    if (!newerBuild || newerBuild === version) return
+    rebuilt.hidden = false
+    hint.hidden = true
+  }
   const scroller = h('div', { class: 'sp-scroller' })
   const preview = h('div', { class: 'sp-preview' },
-    h('div', { class: 'sp-toolbar' }, h('div', { class: 'segmented sp-seg', role: 'group', 'aria-label': 'Preview' }, docSeg, resSeg), hint),
+    h('div', { class: 'sp-toolbar' }, h('div', { class: 'segmented sp-seg', role: 'group', 'aria-label': 'Preview' }, docSeg, resSeg), hint, rebuilt),
     scroller)
   m.body.append(h('div', { class: 'sp-layout' }, sidebar, preview))
 
@@ -674,7 +740,7 @@ export async function openSplitDialog(opts: { version: number; projectName: stri
   async function save(): Promise<void> {
     const parts = plan()
     if (parts.length < 2) return
-    const body = { version: opts.version, parts, names: parts.map((_, i) => names[i] || defaultName(i)), target: opts.isHost && !asZip ? 'downloads' : 'zip' }
+    const body = { version, parts, names: parts.map((_, i) => names[i] || defaultName(i)), target: opts.isHost && !asZip ? 'downloads' : 'zip' }
     saveBtn.disabled = true
     const label = saveBtn.textContent
     saveBtn.textContent = 'Saving…'
@@ -713,5 +779,6 @@ export async function openSplitDialog(opts: { version: number; projectName: stri
 
   renderSide()
   setView(view)
+  showRebuilt()
   if (points[0] && view === 'document') requestAnimationFrame(() => cards[points[0].cut.page - 1]?.el.parentElement?.scrollIntoView({ block: 'center' }))
 }

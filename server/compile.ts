@@ -64,6 +64,19 @@ export function detectEngine(mainSource: string): Engine {
 
 type Manifest = Map<string, { mtimeMs: number; size: number }>
 
+/** A PDF ends with %%EOF; one cut off mid-write (LaTeX stopped or killed) does not. */
+function isWholePdf(file: string, size: number): boolean {
+  const n = Math.min(size, 2048)
+  const buf = Buffer.alloc(n)
+  const fd = fs.openSync(file, 'r')
+  try {
+    fs.readSync(fd, buf, 0, n, size - n)
+  } finally {
+    fs.closeSync(fd)
+  }
+  return buf.includes('%%EOF')
+}
+
 export class Compiler {
   readonly buildDir: string
   private root: string
@@ -98,12 +111,17 @@ export class Compiler {
     return path.join(this.buildDir, this.jobName() + '.pdf')
   }
 
-  /** The PDF to show: the newest build, or the one already in the project before the first build. */
+  /**
+   * The PDF to show: the newest build, or the one already in the project before the first build.
+   * While LaTeX runs, the PDF in the build folder is being written and is not a whole PDF yet, so
+   * the copy in the project (the last error-free build) stands in for it until LaTeX is done.
+   */
   currentPdf(): { file: string; version: number } | null {
-    for (const file of [this.builtPdf(), path.join(this.root, this.projectPdfRel())]) {
+    const project = path.join(this.root, this.projectPdfRel())
+    for (const file of this.child ? [project] : [this.builtPdf(), project]) {
       try {
         const st = fs.statSync(file)
-        if (st.isFile() && st.size > 0) return { file, version: Math.round(st.mtimeMs) }
+        if (st.isFile() && st.size > 0 && isWholePdf(file, st.size)) return { file, version: Math.round(st.mtimeMs) }
       } catch {}
     }
     return null
