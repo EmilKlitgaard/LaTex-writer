@@ -26,6 +26,7 @@ import { closeProject, currentProject, openProject, rememberOpen, requireProject
 import { revoke } from './access.ts'
 import { browse, chooseFolderInFinder, chooseForAttachment, createProject, listWorkspace, makeFolder, trashProject } from './workspace.ts'
 import { openUrl, reveal } from './platform.ts'
+import { buildParts, openForSplit, partFileNames, validateParts } from './pdfsplit.ts'
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -637,6 +638,66 @@ export async function startServer(opts: { port?: number; strictPort?: boolean } 
       reply.header('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(sanitizeFolderName(project.settings.name))}.pdf`)
     }
     return reply.send(fs.createReadStream(pdf.file))
+  })
+
+  // The advanced exporter: the PDF as several PDFs. The host saves them to Downloads; a guest
+  // (or the host asking for it) gets them as one .zip, since a browser will not take several
+  // downloads from one click.
+  app.post('/api/project/pdf/parts', { bodyLimit: 4 * 1024 * 1024 }, async (req, reply) => {
+    const user = requireUser(req)
+    const project = requireProject()
+    const b = body(req)
+    const pdf = project.compiler.currentPdf()
+    if (!pdf) throw new HttpError(409, 'There is no PDF yet. Compile the project first.')
+    if (b.version !== undefined && Number(b.version) !== pdf.version) {
+      throw new HttpError(409, 'The PDF was rebuilt while you were choosing. Look at the preview again, then save.')
+    }
+    let opened: Awaited<ReturnType<typeof openForSplit>>
+    try {
+      opened = await openForSplit(new Uint8Array(fs.readFileSync(pdf.file)))
+    } catch (err) {
+      throw new HttpError(500, `Could not read the PDF: ${(err as Error).message}`)
+    }
+    const parts = validateParts(b.parts, opened.pageCount, opened.size)
+    const base = sanitizeFolderName(project.settings.name)
+    const names = partFileNames(b.names, parts.length, base)
+    const files = await buildParts(opened.doc, parts)
+
+    if (b.target === 'downloads') {
+      if (user.role !== 'host') throw new HttpError(403, 'Only the host can save to Downloads')
+      const downloads = path.join(os.homedir(), 'Downloads')
+      // Every part gets the same "(2)" when any name is taken, so the set stays recognisable.
+      for (let i = 1; i < 500; i++) {
+        const set = names.map((n) => (i === 1 ? n : n.replace(/\.pdf$/, ` (${i}).pdf`)))
+        if (set.some((n) => fs.existsSync(path.join(downloads, n)))) continue
+        const written: string[] = []
+        try {
+          set.forEach((n, k) => {
+            const target = path.join(downloads, n)
+            fs.writeFileSync(target, files[k], { flag: 'wx' })
+            written.push(target)
+          })
+          return { files: written.map((file, k) => ({ file, name: set[k] })) }
+        } catch (err) {
+          for (const f of written) fs.rmSync(f, { force: true })
+          const code = (err as NodeJS.ErrnoException).code
+          if (code === 'EEXIST') continue
+          if (code === 'EPERM' || code === 'EACCES') {
+            throw new HttpError(500, 'macOS blocked access to the Downloads folder. Allow it in System Settings → Privacy & Security → Files and Folders, then try again.')
+          }
+          throw new HttpError(500, `Could not write to the Downloads folder: ${(err as Error).message}`)
+        }
+      }
+      throw new HttpError(500, 'Too many exported copies in the Downloads folder')
+    }
+
+    const archive = new ZipArchive({ zlib: { level: 6 } })
+    archive.on('error', (err: Error) => console.error('Zip failed:', err.message))
+    files.forEach((data, k) => archive.append(Buffer.from(data), { name: names[k] }))
+    void archive.finalize()
+    reply.header('Content-Type', 'application/zip')
+    reply.header('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(`${base} - ${parts.length} parts`)}.zip`)
+    return reply.send(archive)
   })
 
   app.get('/api/project/build', async (req) => {

@@ -58,6 +58,7 @@ A locally hosted, Overleaf-style LaTeX editor. Double-click to start, Safari is 
 
 **Export**
 - "Export PDF" copies `main.pdf` to `~/Downloads/<ProjectName>.pdf` (adds `(2)`, `(3)` if the name exists). Guests get a normal browser download.
+- "Advanced exporter…" (⇧⌘E) splits the PDF into parts at chosen points (default: before the abstract; quick picks from the PDF's bookmarks or headings). Whole pages are copied; a page cut mid-way becomes two pages drawn through windows, with the moved half placed at the usual top of the text and the running header/footer kept. Text outside a window is removed from the content stream. Files: `<ProjectName> - Part N.pdf` in Downloads (the same `(2)` for the whole set if any name is taken), or one .zip (always for guests).
 
 **History**
 - Snapshot every 2 min while editing (only if changed), stored as compressed diffs in `.latexwriter/history`.
