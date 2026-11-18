@@ -627,8 +627,9 @@ export function mountWorkbench(root: HTMLElement, hooks: WorkbenchHooks): () => 
   function openExporter(): void {
     if (document.querySelector('.modal-backdrop')) return
     // The current build, even while the review shows the earlier PDF.
-    if (latestPdfVersion <= 0) return toast('There is no PDF yet. Compile first.', 'info')
-    void openSplitDialog({ version: latestPdfVersion, projectName: app.project?.name || 'Document', isHost })
+    // While a compile runs the dialog waits for it, so only "no PDF and nothing coming" stops it here.
+    if (latestPdfVersion <= 0 && !compileBtn.classList.contains('busy')) return toast('There is no PDF yet. Compile first.', 'info')
+    void openSplitDialog({ projectName: app.project?.name || 'Document', isHost })
   }
   function downloadPdf(): void {
     if (!shownPdfVersion) return toast('There is no PDF yet. Compile first.', 'info')

@@ -609,6 +609,11 @@ button.ai-skill-chip:hover { border-color: var(--accent); background: var(--acce
 .split-modal .modal-body { padding: 0; overflow: hidden; display: flex; flex-direction: column; border-top: 1px solid var(--border); }
 .split-modal .modal-footer { border-top: 1px solid var(--border); align-items: center; padding: 12px 16px; }
 .sp-loading { margin: auto; display: flex; align-items: center; gap: 10px; color: var(--fg-muted); font-size: 13px; }
+.sp-failed { flex-wrap: wrap; justify-content: center; max-width: 440px; text-align: center; }
+.sp-failed > .icon { color: var(--warn); }
+.sp-rebuilt { margin-left: auto; flex: none; display: flex; align-items: center; gap: 7px; padding: 3px 4px 3px 9px; border-radius: 8px; background: var(--warn-soft); color: var(--warn); font-size: 12px; font-weight: 550; }
+.sp-rebuilt[hidden] { display: none; }
+.sp-hint[hidden] { display: none; }
 .sp-layout { flex: 1; min-height: 0; display: grid; grid-template-columns: 320px minmax(0, 1fr); }
 
 /* Sidebar: grouped like a macOS inspector. */

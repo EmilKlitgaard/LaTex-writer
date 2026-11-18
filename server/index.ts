@@ -633,6 +633,8 @@ export async function startServer(opts: { port?: number; strictPort?: boolean } 
     const pdf = project.compiler.currentPdf()
     if (!pdf) throw new HttpError(404, 'No PDF yet')
     reply.header('Content-Type', 'application/pdf')
+    // Which build this is, so a page can say later which PDF its choices were made on.
+    reply.header('X-PDF-Version', String(pdf.version))
     reply.header('Content-Security-Policy', "sandbox; default-src 'none'")
     if (query(req).download === '1') {
       reply.header('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(sanitizeFolderName(project.settings.name))}.pdf`)
