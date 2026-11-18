@@ -4,5 +4,8 @@
 cd "$(dirname "$0")" || exit 1
 ./scripts/make-app.sh "$@"
 status=$?
-echo
-if [ $status -eq 0 ]; then echo "Done. You can close this window."; else echo "Building the apps failed (code $status). Press Return to close."; read -r _; fi
+if [ $status -ne 0 ]; then
+  echo
+  echo "❌ Building the apps failed (code $status). Press Return to close."
+  read -r _
+fi
